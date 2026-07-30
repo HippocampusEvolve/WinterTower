@@ -127,6 +127,7 @@ export function createAmbient(wind: Wind) {
     whistleFilter.frequency.setTargetAtTime(950 + g * 500, t, 0.6)
   }
 
+  /** Заглушить/вернуть звук. Горячей клавиши нет: из консоли — `wt.ambient.toggle()`. */
   function toggle() {
     muted = !muted
     if (ctx) sfx.gain.setTargetAtTime(muted ? 0 : 1, ctx.currentTime, 0.05)

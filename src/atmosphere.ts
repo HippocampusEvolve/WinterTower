@@ -24,7 +24,6 @@ import {
   VignetteEffect,
   BlendFunction,
 } from 'postprocessing'
-import GUI from 'lil-gui'
 
 /**
  * Палитра снята с reference/ref_01.png — в фазе 3 пересчитана по средним
@@ -374,11 +373,11 @@ export function createAtmosphere(
     new EffectPass(camera, ssao, bloom, exposure, tone, hueSat, briCon, vignette, noise),
   )
 
-  // Подписчики на apply(): снег, ореолы, звук живут вне этого файла, но их
-  // ползунки должны стоять в той же панели. Три реальных потребителя — заводим.
+  // Подписчики на apply(): снег, ореолы и звук живут вне этого файла, но читают
+  // те же SETTINGS — прогон должен быть один на всех.
   const listeners: Array<() => void> = []
 
-  /** Прогнать SETTINGS в сцену. Вызывается ползунками GUI. */
+  /** Прогнать SETTINGS в сцену. Зовётся один раз при сборке мира. */
   function apply() {
     fog.density = SETTINGS.fogDensity
     fog.color.set(SETTINGS.fogColor)
@@ -408,69 +407,20 @@ export function createAtmosphere(
     for (const fn of listeners) fn()
   }
 
-  // --- Панель настройки ----------------------------------------------------
-  const gui = new GUI({ title: 'Атмосфера  ·  G' })
-  gui.domElement.style.display = 'none'
-
-  const fFog = gui.addFolder('Туман')
-  fFog.add(SETTINGS, 'fogDensity', 0, 0.06, 0.001).name('плотность').onChange(apply)
-  fFog.addColor(SETTINGS, 'fogColor').name('цвет').onChange(apply)
-
-  const fLight = gui.addFolder('Свет')
-  fLight.add(SETTINGS, 'skyLight', 0, 5, 0.05).name('небо').onChange(apply)
-  fLight.add(SETTINGS, 'bounceLight', 0, 3, 0.05).name('отсвет снега').onChange(apply)
-  fLight.add(SETTINGS, 'sunLight', 0, 2, 0.01).name('солнце').onChange(apply)
-  fLight.add(SETTINGS, 'sunAngle', 0, 360, 1).name('угол солнца').onChange(apply)
-  fLight.add(SETTINGS, 'exposure', 0.1, 2, 0.01).name('экспозиция').onChange(apply)
-
-  const fGrade = gui.addFolder('Грейдинг')
-  fGrade.add(SETTINGS, 'saturation', -1, 0.5, 0.01).name('насыщенность').onChange(apply)
-  fGrade.add(SETTINGS, 'contrast', -0.5, 0.5, 0.01).name('контраст').onChange(apply)
-  fGrade.add(SETTINGS, 'brightness', -0.5, 0.5, 0.01).name('яркость').onChange(apply)
-
-  const fPost = gui.addFolder('Постпроцессинг')
-  fPost.add(SETTINGS, 'bloom', 0, 3, 0.01).name('блум').onChange(apply)
-  fPost.add(SETTINGS, 'bloomThreshold', 0, 1, 0.01).name('порог блума').onChange(apply)
-  fPost.add(SETTINGS, 'ssao', 0, 4, 0.05).name('затенение углов').onChange(apply)
-  fPost.add(SETTINGS, 'ssaoRadius', 0.01, 0.5, 0.005).name('радиус затенения').onChange(apply)
-  fPost.add(SETTINGS, 'ssaoDistance', 5, 120, 1).name('дальность затенения').onChange(apply)
-  fPost.add(SETTINGS, 'vignette', 0, 1.5, 0.01).name('виньетка').onChange(apply)
-  fPost.add(SETTINGS, 'grain', 0, 0.3, 0.005).name('зерно').onChange(apply)
-
-  const fSnow = gui.addFolder('Снег и ветер')
-  fSnow.add(SETTINGS, 'snowSize', 0.01, 0.3, 0.005).name('размер хлопьев').onChange(apply)
-  fSnow.add(SETTINGS, 'snowOpacity', 0, 1, 0.01).name('плотность снега').onChange(apply)
-  fSnow.add(SETTINGS, 'snowFall', 0.2, 6, 0.1).name('скорость падения').onChange(apply)
-  fSnow.add(SETTINGS, 'windSpeed', 0, 20, 0.1).name('ветер').onChange(apply)
-  fSnow.add(SETTINGS, 'windGust', 0, 20, 0.1).name('порывы').onChange(apply)
-  fSnow.add(SETTINGS, 'windAngle', 0, 360, 1).name('направление ветра').onChange(apply)
-
-  const fWarm = gui.addFolder('Тёплые источники')
-  fFog.add(SETTINGS, 'haze', 0, 0.4, 0.005).name('клубы').onChange(apply)
-
-  fWarm.add(SETTINGS, 'halo', 0, 2, 0.01).name('ореолы').onChange(apply)
-  fWarm.add(SETTINGS, 'haloScale', 0.2, 3, 0.05).name('размер ореолов').onChange(apply)
-  fWarm.add(SETTINGS, 'ambient', 0, 1, 0.01).name('громкость ветра').onChange(apply)
-
-  gui.add(
-    {
-      печать: () => console.log(JSON.stringify(SETTINGS, null, 2)),
-    },
-    'печать',
-  ).name('вывести настройки в консоль')
-
-  function toggleGui() {
-    const el = gui.domElement
-    el.style.display = el.style.display === 'none' ? '' : 'none'
-  }
-
   apply()
 
-  /** Подписаться на изменение настроек ползунком. Вызывается сразу же. */
+  /**
+   * Подписаться на прогон настроек. Вызывается сразу же.
+   *
+   * Панели с ползунками здесь больше нет: атмосферу мира задаёт автор в
+   * `SETTINGS`, игроку крутить нечего (docs/games.md). Правится атмосфера
+   * прямо в этом файле; чтобы щупать её на живом мире, есть `wt.atmosphere`
+   * в консоли — значение в `SETTINGS` и `wt.atmosphere.apply()`.
+   */
   function onApply(fn: () => void) {
     listeners.push(fn)
     fn()
   }
 
-  return { composer, gui, toggleGui, apply, onApply, sun, sky, fog }
+  return { composer, apply, onApply, sun, sky, fog }
 }

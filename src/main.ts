@@ -10,8 +10,8 @@ import { whenLoaded, probe } from './loading'
 
 import * as THREE from 'three'
 import { Octree } from 'three/examples/jsm/math/Octree.js'
-import Stats from 'stats.js'
 
+import { createShell } from './shell'
 import { createAtmosphere } from './atmosphere'
 import { createLook } from './look'
 import { createPlayer } from './player'
@@ -78,7 +78,7 @@ const haze = createHaze(camera, wind)
 scene.add(haze.group)
 
 const ambient = createAmbient(wind)
-// Ползунки снега, ореолов и громкости стоят в той же панели «G».
+// Снег, клубы и ореолы читают те же настройки атмосферы — один прогон на всех.
 atmosphere.onApply(() => {
   snow.apply()
   haze.apply()
@@ -102,12 +102,32 @@ hands = createHands({
   spawnYaw: world.yaw,
 })
 
+/**
+ * Кадр в файл. Горячей клавиши нет (игроку она не нужна), зовётся из консоли:
+ * `wt.shot()`. Рисовать надо тут же, своей рукой: буфер не сохраняется между
+ * кадрами, и `toBlob` в отрыве от render() снял бы пустоту.
+ */
+function shot() {
+  if (hands) hands.renderWorld(renderer, () => atmosphere.composer.render())
+  else atmosphere.composer.render()
+  renderer.domElement.toBlob((blob) => {
+    if (!blob) return
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `wintertower_${Math.floor(performance.now())}.png`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  })
+}
+
 // Отладочный хендл: из консоли браузера доступны камера, игрок, сцена, атмосфера.
-// Через него же гоняются автопроверки контроллера.
+// Через него же гоняются автопроверки контроллера. Игрок его не видит и попасть
+// в него не может — в кадре не осталось ни панелей, ни счётчиков.
 // THREE здесь не для мира, а для проверок: без него из консоли не собрать
 // ни Raycaster, ни Vector3, а замер кадра по материалам ведётся именно лучом.
 Object.assign(window, {
   wt: {
+    shot,
     scene,
     camera,
     player,
@@ -126,18 +146,17 @@ Object.assign(window, {
   },
 })
 
-// --- Оверлеи ----------------------------------------------------------------
-const stats = new Stats()
-stats.dom.style.cssText = 'position:fixed;left:8px;top:8px;opacity:0.5;z-index:4'
-document.body.appendChild(stats.dom)
-
-const veil = document.getElementById('veil')!
-veil.addEventListener('click', () => {
+// --- Оболочка мира ----------------------------------------------------------
+// Вход, пауза и выход на витрину — общий для всех миров экран (shell.ts).
+// Esc браузер обрабатывает сам: он отпускает курсор, а по этому событию
+// возвращается экран паузы.
+const shell = createShell(() => {
   renderer.domElement.requestPointerLock()
   ambient.start() // до жеста пользователя браузер звук не заводит
 })
 document.addEventListener('pointerlockchange', () => {
-  veil.classList.toggle('hidden', document.pointerLockElement !== null)
+  if (document.pointerLockElement) shell.close()
+  else shell.open()
 })
 
 // --- Заставка загрузки ------------------------------------------------------
@@ -171,32 +190,12 @@ function warmUp() {
     else atmosphere.composer.render()
     for (const o of culled) o.frustumCulled = true
     loadingEl.classList.add('hidden')
+    shell.open() // мир готов — можно звать внутрь
   })
 }
 
 whenLoaded(warmUp)
 probe() // на случай, если грузить нечего вовсе — см. loading.ts
-
-// --- Горячие клавиши --------------------------------------------------------
-let wantShot = false
-document.addEventListener('keydown', (e) => {
-  if (e.code === 'KeyG') atmosphere.toggleGui()
-  if (e.code === 'KeyP') wantShot = true
-  if (e.code === 'KeyM') ambient.toggle()
-  if (e.code === 'KeyL') world.plan.toggle()
-})
-
-/** Скриншот берём сразу после render() — иначе буфер уже очищен. */
-function grabShot() {
-  renderer.domElement.toBlob((blob) => {
-    if (!blob) return
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `wintertower_${Math.floor(performance.now())}.png`
-    a.click()
-    URL.revokeObjectURL(a.href)
-  })
-}
 
 // --- Ресайз -----------------------------------------------------------------
 addEventListener('resize', () => {
@@ -212,7 +211,6 @@ addEventListener('resize', () => {
 const timer = new THREE.Timer()
 
 renderer.setAnimationLoop(() => {
-  stats.begin()
   timer.update()
 
   // потолок на dt: после свёрнутой вкладки не должно телепортировать сквозь стены
@@ -232,11 +230,4 @@ renderer.setAnimationLoop(() => {
   // и снимают сразу после, а сами идут отдельным проходом поверх.
   if (hands) hands.renderWorld(renderer, () => atmosphere.composer.render())
   else atmosphere.composer.render()
-
-  if (wantShot) {
-    wantShot = false
-    grabShot()
-  }
-
-  stats.end()
 })

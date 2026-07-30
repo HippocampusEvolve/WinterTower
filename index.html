@@ -2,8 +2,9 @@
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <title>WinterTower</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🏔️</text></svg>" />
     <!-- Прелоада карт здесь НЕТ, и это осознанно. Приём (link rel=preload с
          fetchpriority=low) работает у Snowfall, где прелоад весит вдвое больше
          бандла, и не работает здесь, где он весит в девять раз больше: шесть
@@ -13,11 +14,27 @@
          весят мегабайтами, лучшее, что можно сделать для загрузки, — пустить
          бандл первым: до его разбора нет ни кадра, ни прогресса. -->
     <style>
-      :root { color-scheme: dark; }
+      /* ======================================================================
+         ОБОЛОЧКА МИРА — одинаковая во всех мирах find-the-end.fun.
+         Полоса загрузки, экран входа (он же пауза), выход на витрину. Числа
+         в этом блоке общие для всех миров и правятся сразу во всех; своё у
+         мира — только палитра ниже и три строки текста в разметке.
+         Эталон и правила: docs/games.md, «Единая оболочка мира».
+         ====================================================================== */
+      :root {
+        color-scheme: dark;
+        --bg: #0b1218; /* фон мира: тот же цвет, что у неба в кадре */
+        --ink: #c3d7e2; /* основной текст */
+        --dim: #6b8394; /* тихий текст: подписи и тихие ссылки */
+        --accent: #7fb2ff; /* акцент мира — тот же, что на карточке витрины */
+        --edge: rgba(127, 178, 255, 0.45); /* та же краска в рамке кнопки */
+        --glow: rgba(127, 178, 255, 0.12); /* и в её подсветке под курсором */
+      }
+
       * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); }
       body {
-        overflow: hidden; background: #0b1218;
-        font: 13px/1.5 -apple-system, Segoe UI, sans-serif;
+        font-family: 'Segoe UI', system-ui, sans-serif; color: var(--ink);
         /* Игра ведёт себя как приложение: текст здесь не для копирования.
            Без этого зажатая мышь тянет по экрану полосу выделения, а долгое
            касание вызывает лупу и меню «скопировать». */
@@ -26,14 +43,14 @@
       }
       canvas { display: block; }
 
-      /* Заставка загрузки. Лежит поверх #veil и уходит, когда карты в памяти,
-         а шейдеры прогреты первым кадром (см. warmUp в main.ts): станцию не
-         показываем, пока она стоит некрашеной. */
+      /* Заставка загрузки. Уходит, когда карты в памяти, а шейдеры прогреты
+         первым кадром (см. warmUp в main.ts): станцию не показываем, пока она
+         стоит некрашеной. */
       #loading {
         position: fixed; inset: 0; z-index: 20;
-        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px;
-        background: #0b1218;
-        color: #6b8394; font-size: 12px; letter-spacing: 0.4em; text-indent: 0.4em;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.6rem;
+        background: var(--bg);
+        font-size: 0.8rem; letter-spacing: 0.4em; text-indent: 0.4em; color: var(--dim);
         transition: opacity 0.6s ease;
       }
       #loading.hidden { opacity: 0; pointer-events: none; }
@@ -44,42 +61,86 @@
          ширину сам. */
       #loadBar {
         position: relative; overflow: hidden;
-        width: min(280px, 46vw); height: 2px;
-        background: rgba(140, 175, 200, 0.14);
+        width: min(300px, 48vw); height: 2px;
+        background: rgba(140, 165, 205, 0.14);
       }
       #loadFill {
         position: absolute; top: 0; bottom: 0; left: -34%; width: 34%;
-        background: linear-gradient(90deg, transparent, rgba(150, 200, 230, 0.9), transparent);
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
         animation: drift 1.7s ease-in-out infinite;
       }
       @keyframes drift { to { left: 100%; } }
       #loadBar.known #loadFill {
         animation: none; left: 0; width: 0;
-        background: linear-gradient(90deg, #7ea9c4, #cfe6f2);
+        background: linear-gradient(90deg, var(--accent), var(--ink));
         transition: width 0.35s ease;
       }
 
-      /* Заставка до захвата курсора */
-      #veil {
+      /* Вход в мир, он же пауза: один экран на оба случая — уходит по кнопке,
+         возвращается, когда курсор отпущен (Esc, потеря фокуса). */
+      #gate {
         position: fixed; inset: 0; z-index: 10;
-        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
-        background: rgba(10, 20, 27, 0.82);
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        background: rgba(4, 8, 14, 0.62);
         backdrop-filter: blur(6px);
-        color: #c3d7e2; letter-spacing: 0.02em;
-        cursor: pointer; user-select: none;
         transition: opacity 0.5s ease;
       }
-      #veil.hidden { opacity: 0; pointer-events: none; }
-      #veil h1 { font-size: 28px; font-weight: 300; letter-spacing: 0.35em; text-indent: 0.35em; }
-      #veil .keys { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; opacity: 0.65; }
-      #veil kbd {
-        display: inline-block; padding: 2px 7px; margin-right: 6px;
-        border: 1px solid #46545c; border-radius: 3px;
-        background: #1b2a33; font-family: inherit; font-size: 11px;
+      #gate.hidden { opacity: 0; pointer-events: none; }
+      /* Кегль ведёт себя от ширины экрана осторожно: имя мира — одно длинное
+         слово с большим трекингом, и на 360 px оно упиралось в края. */
+      #gate h1 {
+        max-width: 100%; padding: 0 1rem;
+        font-size: clamp(1.5rem, 5.4vw, 4.6rem); font-weight: 200;
+        letter-spacing: 0.4em; text-indent: 0.4em; text-align: center;
+        text-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
       }
-      #veil .hint { opacity: 0.45; font-size: 12px; }
+      /* Строка настроения — та же, что на карточке этого мира на витрине. */
+      #gate .mood {
+        margin-top: 1.1rem; padding: 0 1.5rem;
+        font-size: 0.9rem; letter-spacing: 0.06em; color: var(--dim); text-align: center;
+      }
+      .btn {
+        margin-top: 3rem; padding: 0.9rem 3.2rem;
+        font: inherit; font-size: 0.95rem;
+        letter-spacing: 0.3em; text-indent: 0.3em; text-transform: uppercase;
+        color: var(--ink); background: transparent;
+        border: 1px solid var(--edge); border-radius: 2px;
+        cursor: pointer; transition: all 0.25s ease;
+      }
+      .btn:hover { background: var(--glow); border-color: var(--accent); }
 
-      /* Контекстная подсказка: что сделает F, что делают кнопки мыши */
+      /* Тихие ссылки под кнопкой: выход из мира и всё, что мир добавит от себя. */
+      .quiet {
+        margin-top: 1.8rem;
+        font: inherit; font-size: 0.68rem;
+        letter-spacing: 0.28em; text-indent: 0.28em; text-transform: uppercase;
+        color: var(--dim); opacity: 0.75; text-decoration: none;
+        background: transparent; border: none; cursor: pointer;
+        transition: opacity 0.25s ease, color 0.25s ease;
+      }
+      .quiet:hover { opacity: 1; color: var(--ink); }
+
+      /* Выход на витрину. В самой игре его в кадре нет: стрелка появляется
+         только когда курсор свободен — на экране входа и на паузе. */
+      #exit {
+        position: fixed; z-index: 11;
+        top: max(14px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left));
+        width: 44px; height: 44px;
+        display: flex; align-items: center; justify-content: center;
+        opacity: 0; pointer-events: none; transition: opacity 0.35s ease;
+      }
+      body.paused #exit { opacity: 0.45; pointer-events: auto; }
+      #exit:hover { opacity: 1; }
+      #exit svg {
+        width: 20px; height: 20px; fill: none; stroke: var(--ink);
+        stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round;
+      }
+
+      /* ================= дальше — своё этого мира ========================= */
+
+      /* Контекстная подсказка: что сделает F, что делают кнопки мыши.
+         Единственный текст, который остаётся в кадре, и то у самого объекта.
+         Уйдёт вместе с переходом на интуитивное управление (ROADMAP). */
       #prompt {
         position: fixed; left: 50%; bottom: 12%; z-index: 5;
         transform: translateX(-50%);
@@ -89,14 +150,6 @@
         pointer-events: none; white-space: nowrap;
       }
       #prompt.show { opacity: 0.8; }
-
-      /* Прицел */
-      #dot {
-        position: fixed; left: 50%; top: 50%; z-index: 5;
-        width: 3px; height: 3px; margin: -1.5px 0 0 -1.5px;
-        border-radius: 50%; background: #dfeaf0; opacity: 0.35;
-        pointer-events: none;
-      }
     </style>
   </head>
   <body>
@@ -105,23 +158,19 @@
       <div id="loadBar"><div id="loadFill"></div></div>
     </div>
 
-    <div id="dot"></div>
-    <div id="prompt"></div>
-    <div id="veil">
+    <a id="exit" href="https://find-the-end.fun/" aria-label="Выйти на витрину">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
+    </a>
+
+    <div id="gate" class="hidden">
       <h1>WINTERTOWER</h1>
-      <div class="keys">
-        <span><kbd>WASD</kbd>идти</span>
-        <span><kbd>Shift</kbd>бежать</span>
-        <span><kbd>Space</kbd>прыжок</span>
-        <span><kbd>F</kbd>взять инструмент</span>
-        <span><kbd>ЛКМ</kbd>работать</span>
-        <span><kbd>G</kbd>атмосфера</span>
-        <span><kbd>P</kbd>скриншот</span>
-        <span><kbd>M</kbd>звук</span>
-        <span><kbd>Esc</kbd>курсор</span>
-      </div>
-      <div class="hint">клик — войти</div>
+      <p class="mood">Башня растёт вверх. Кто-то поднимался до тебя.</p>
+      <button id="enter" class="btn" type="button" data-resume="продолжить">подняться</button>
+      <a class="quiet" href="https://find-the-end.fun/">выйти из мира</a>
     </div>
+
+    <div id="prompt"></div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

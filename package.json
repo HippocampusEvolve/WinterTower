@@ -12,9 +12,7 @@
     "room": "rolldown tools/room.ts -f esm -d node_modules/.wt --platform node --silent && node node_modules/.wt/room.js"
   },
   "dependencies": {
-    "lil-gui": "^0.21.0",
     "postprocessing": "^6.39.3",
-    "stats.js": "^0.17.0",
     "three": "^0.185.1"
   },
   "devDependencies": {
