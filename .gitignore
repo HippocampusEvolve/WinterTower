@@ -19,6 +19,10 @@ reference/
 models-unused/
 textures-unused/
 
+# временное: скриншоты проверок, разовые скрипты, черновики
+temp/*
+!temp/README.md
+
 # скриншоты и снимки отладки в корне (текстуры в public/ не задевать)
 /*.jpeg
 /*.jpg
