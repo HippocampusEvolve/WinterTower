@@ -1,0 +1,25 @@
+{
+  "name": "wintertower",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ходибельный 3D-мир от первого лица: высокогорная станция в тумане.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "measure": "rolldown tools/measure.ts -f esm -d node_modules/.wt --platform node --silent && node node_modules/.wt/measure.js",
+    "room": "rolldown tools/room.ts -f esm -d node_modules/.wt --platform node --silent && node node_modules/.wt/room.js"
+  },
+  "dependencies": {
+    "lil-gui": "^0.21.0",
+    "postprocessing": "^6.39.3",
+    "stats.js": "^0.17.0",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5"
+  }
+}

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WinterTower</title>
+    <!-- Прелоада карт здесь НЕТ, и это осознанно. Приём (link rel=preload с
+         fetchpriority=low) работает у Snowfall, где прелоад весит вдвое больше
+         бандла, и не работает здесь, где он весит в девять раз больше: шесть
+         тяжёлых карт забивают канал, и модуль игры приезжает вместо третьей
+         секунды на восьмой. Замер на 1.5 Мбит/с: бандл 2983 мс без прелоада
+         против 8194 мс с ним, вход в мир 15.1 с против 28.9 с. Пока карты
+         весят мегабайтами, лучшее, что можно сделать для загрузки, — пустить
+         бандл первым: до его разбора нет ни кадра, ни прогресса. -->
+    <style>
+      :root { color-scheme: dark; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        overflow: hidden; background: #0b1218;
+        font: 13px/1.5 -apple-system, Segoe UI, sans-serif;
+        /* Игра ведёт себя как приложение: текст здесь не для копирования.
+           Без этого зажатая мышь тянет по экрану полосу выделения, а долгое
+           касание вызывает лупу и меню «скопировать». */
+        -webkit-user-select: none; user-select: none;
+        -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+      }
+      canvas { display: block; }
+
+      /* Заставка загрузки. Лежит поверх #veil и уходит, когда карты в памяти,
+         а шейдеры прогреты первым кадром (см. warmUp в main.ts): станцию не
+         показываем, пока она стоит некрашеной. */
+      #loading {
+        position: fixed; inset: 0; z-index: 20;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px;
+        background: #0b1218;
+        color: #6b8394; font-size: 12px; letter-spacing: 0.4em; text-indent: 0.4em;
+        transition: opacity 0.6s ease;
+      }
+      #loading.hidden { opacity: 0; pointer-events: none; }
+
+      /* Пока бандл не разобран, о долях ничего не известно — полоса просто
+         «дышит» на CSS-анимации, без единой строчки JS. Как только лоадеры
+         three начинают считать карты, loading.ts вешает .known и ведёт
+         ширину сам. */
+      #loadBar {
+        position: relative; overflow: hidden;
+        width: min(280px, 46vw); height: 2px;
+        background: rgba(140, 175, 200, 0.14);
+      }
+      #loadFill {
+        position: absolute; top: 0; bottom: 0; left: -34%; width: 34%;
+        background: linear-gradient(90deg, transparent, rgba(150, 200, 230, 0.9), transparent);
+        animation: drift 1.7s ease-in-out infinite;
+      }
+      @keyframes drift { to { left: 100%; } }
+      #loadBar.known #loadFill {
+        animation: none; left: 0; width: 0;
+        background: linear-gradient(90deg, #7ea9c4, #cfe6f2);
+        transition: width 0.35s ease;
+      }
+
+      /* Заставка до захвата курсора */
+      #veil {
+        position: fixed; inset: 0; z-index: 10;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+        background: rgba(10, 20, 27, 0.82);
+        backdrop-filter: blur(6px);
+        color: #c3d7e2; letter-spacing: 0.02em;
+        cursor: pointer; user-select: none;
+        transition: opacity 0.5s ease;
+      }
+      #veil.hidden { opacity: 0; pointer-events: none; }
+      #veil h1 { font-size: 28px; font-weight: 300; letter-spacing: 0.35em; text-indent: 0.35em; }
+      #veil .keys { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; opacity: 0.65; }
+      #veil kbd {
+        display: inline-block; padding: 2px 7px; margin-right: 6px;
+        border: 1px solid #46545c; border-radius: 3px;
+        background: #1b2a33; font-family: inherit; font-size: 11px;
+      }
+      #veil .hint { opacity: 0.45; font-size: 12px; }
+
+      /* Контекстная подсказка: что сделает F, что делают кнопки мыши */
+      #prompt {
+        position: fixed; left: 50%; bottom: 12%; z-index: 5;
+        transform: translateX(-50%);
+        color: #cfe2ec; font-size: 13px; letter-spacing: 0.04em;
+        text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+        opacity: 0; transition: opacity 0.25s ease;
+        pointer-events: none; white-space: nowrap;
+      }
+      #prompt.show { opacity: 0.8; }
+
+      /* Прицел */
+      #dot {
+        position: fixed; left: 50%; top: 50%; z-index: 5;
+        width: 3px; height: 3px; margin: -1.5px 0 0 -1.5px;
+        border-radius: 50%; background: #dfeaf0; opacity: 0.35;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loading">
+      <span>ПОДЪЁМ К СТАНЦИИ…</span>
+      <div id="loadBar"><div id="loadFill"></div></div>
+    </div>
+
+    <div id="dot"></div>
+    <div id="prompt"></div>
+    <div id="veil">
+      <h1>WINTERTOWER</h1>
+      <div class="keys">
+        <span><kbd>WASD</kbd>идти</span>
+        <span><kbd>Shift</kbd>бежать</span>
+        <span><kbd>Space</kbd>прыжок</span>
+        <span><kbd>F</kbd>взять инструмент</span>
+        <span><kbd>ЛКМ</kbd>работать</span>
+        <span><kbd>G</kbd>атмосфера</span>
+        <span><kbd>P</kbd>скриншот</span>
+        <span><kbd>M</kbd>звук</span>
+        <span><kbd>Esc</kbd>курсор</span>
+      </div>
+      <div class="hint">клик — войти</div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
