@@ -278,8 +278,14 @@ function planOf(room: Room, items: Fixture[], lo: number, hi: number, cx: number
 }
 
 // --- Претензии ----------------------------------------------------------------
-function complaints(room: Room, items: Fixture[], g: ReturnType<typeof grid>): string[] {
+function complaints(
+  room: Room,
+  items: Fixture[],
+  g: ReturnType<typeof grid>,
+): { bad: string[]; look: string[] } {
   const bad: string[] = []
+  /** Не ошибка, но и не наверняка: пары, которые стоит глянуть в кадре. */
+  const look: string[] = []
   const floor = room.y0 + 0.5 // объём регистрируется на 0.5 ниже пола
   const inner = items.filter((f) => f.kind !== 'door' && f.kind !== 'glass')
 
@@ -299,9 +305,25 @@ function complaints(room: Room, items: Fixture[], g: ReturnType<typeof grid>): s
       // предмета, — то есть действительно стоит в нём, а не под ним.
       const tucked =
         (a.kind === 'small' && a.y1 <= b.y1 + 0.02) || (b.kind === 'small' && b.y1 <= a.y1 + 0.02)
-      if (!tucked && ox > 0.06 && oy > 0.06 && oz > 0.06) {
+      if (ox <= 0.06 || oy <= 0.06 || oz <= 0.06) continue
+      if (!tucked) {
         bad.push(
           `«${a.name}» и «${b.name}» в одном месте: перекрытие ${ox.toFixed(2)}×${oy.toFixed(2)}×${oz.toFixed(2)} м`,
+        )
+        continue
+      }
+      // Задвинутое под мебель проверка пропускает — и пропускает вместе с ним
+      // предмет, наполовину вошедший в чужой бок. Полено, торчащее из ящика
+      // с углём, ниже его крышки, то есть формально «под» ним; нашлось оно
+      // глазами в кадре, а не здесь. Отличить одно от другого габаритами
+      // нельзя: мешок в контейнере и сапоги под скамьёй выглядят так же.
+      // Поэтому такие пары не претензия, а отдельный список на глаз: сюда
+      // попадает то, что НЕ накрыто большим предметом в плане целиком.
+      const covered = (s: Fixture, big: Fixture) =>
+        s.x0 >= big.x0 - 0.02 && s.x1 <= big.x1 + 0.02 && s.z0 >= big.z0 - 0.02 && s.z1 <= big.z1 + 0.02
+      if (!covered(a, b) && !covered(b, a)) {
+        look.push(
+          `«${a.name}» наполовину в «${b.name}»: перекрытие ${ox.toFixed(2)}×${oy.toFixed(2)}×${oz.toFixed(2)} м`,
         )
       }
     }
@@ -371,7 +393,7 @@ function complaints(room: Room, items: Fixture[], g: ReturnType<typeof grid>): s
     }
   }
 
-  return bad
+  return { bad, look }
 }
 
 /** Проход: свободна ли комната и связаны ли двери между собой. */
@@ -438,7 +460,8 @@ for (const room of picked) {
   const cx = w > 20 ? 0.5 : CELL_X
   const g = grid(room, items, cx)
   const p = passage(room, items, g)
-  const bad = [...complaints(room, items, g), ...p.bad]
+  const c = complaints(room, items, g)
+  const bad = [...c.bad, ...p.bad]
   problems += bad.length
 
   console.log(
@@ -470,6 +493,10 @@ for (const room of picked) {
   }
 
   console.log(bad.length ? '\n  ПРЕТЕНЗИИ:\n    ' + bad.join('\n    ') : '\n  претензий нет')
+  // Список «на глаз» печатается всегда, но проверку не роняет: половина его —
+  // законная укладка (мешок в контейнере), а половина — предмет, влезший
+  // соседу в бок. Различает их только кадр.
+  if (c.look.length) console.log('  ПОСМОТРЕТЬ:\n    ' + c.look.join('\n    '))
 }
 
 console.log(

@@ -12,7 +12,7 @@
 
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import { noteBox, recording } from './fixtures'
+import { collectingShapes, noteBox, noteShape, recording } from './fixtures'
 
 const _m = new THREE.Matrix4()
 const _q = new THREE.Quaternion()
@@ -106,6 +106,34 @@ export function cylinderUV(geo: THREE.BufferGeometry, r: number, h: number): THR
 }
 
 /**
+ * Метрическая развёртка сферы — по дугам, а не проекцией.
+ *
+ * Та же болезнь, что у цилиндра, и по той же причине: у сферы нормаль
+ * поворачивается во все стороны, доминирующая ось у `planarUV` скачет, и зерно
+ * бетона на куполе то растягивается, то съёживается — на скате видно шесть
+ * заплат разного масштаба вместо одной поверхности.
+ *
+ * Здесь развёртка честная: по параллели — длина дуги экватора (2πr), по
+ * меридиану — длина дуги от полюса (r · thetaLength). У самой макушки текселя
+ * всё равно сходятся: это свойство сферы, а не развёртки, — но на куполе
+ * радиусом 9 м макушка занимает в кадре десяток пикселей.
+ *
+ * Считать ОБЯЗАТЕЛЬНО до `Parts.add`, пока сфера стоит в своих осях.
+ */
+export function sphereUV(
+  geo: THREE.BufferGeometry,
+  r: number,
+  thetaLength = Math.PI,
+): THREE.BufferGeometry {
+  const uv = geo.attributes.uv as THREE.BufferAttribute
+  const circ = 2 * Math.PI * r
+  const arc = r * thetaLength
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * circ, uv.getY(i) * arc)
+  uv.needsUpdate = true
+  return keepUV(geo)
+}
+
+/**
  * Сообщить габарит геометрии в реестр обстановки (`fixtures.ts`).
  *
  * Здесь, а не в самом реестре, потому что здесь единственное место, где
@@ -120,6 +148,20 @@ function note(geo: THREE.BufferGeometry): void {
   geo.computeBoundingBox()
   const b = geo.boundingBox!
   noteBox(b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z)
+  // Форма предмета - только когда её просят (внешняя проверка). Рамкой вопрос
+  // «влез ли предмет соседу в бок» не решается, а в браузере форма не нужна.
+  if (collectingShapes()) noteShape(triangles(geo))
+}
+
+/** Треугольники геометрии плоским списком. Координаты уже мировые: матрица применена выше. */
+function triangles(geo: THREE.BufferGeometry): number[] {
+  const pos = geo.attributes.position as THREE.BufferAttribute
+  const idx = geo.index
+  const out: number[] = []
+  const push = (i: number) => out.push(pos.getX(i), pos.getY(i), pos.getZ(i))
+  if (idx) for (let i = 0; i < idx.count; i++) push(idx.getX(i))
+  else for (let i = 0; i < pos.count; i++) push(i)
+  return out
 }
 
 /** Детерминированный ГПСЧ. Мир должен выглядеть одинаково при каждой перезагрузке. */

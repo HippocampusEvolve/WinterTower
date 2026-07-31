@@ -179,6 +179,24 @@ export function wall(
  *
  * Возвращает координату подножия по ходовой оси — за неё цепляется пол площадки.
  */
+const RISE = 0.2
+const RUN = 0.32
+
+/** Число ступеней марша на перепаде — считается одной формулой с `flight`. */
+const stepsOf = (yTop: number, yBottom: number) => Math.max(1, Math.round((yTop - yBottom) / RISE))
+
+/**
+ * Длина марша по ходовой оси, ДО того как он построен.
+ *
+ * Нужна тому, кто ставит марш не от верха, а от низа: у длинного марша в
+ * вестибюле обсерватории низ обязан не доехать до стены, иначе последняя
+ * ступень упирается в неё и заходить на лестницу оказывается неоткуда.
+ * Считать «на глаз» тут нельзя — длина зависит от округления числа ступеней.
+ */
+export function flightRun(yTop: number, yBottom: number): number {
+  return stepsOf(yTop, yBottom) * RUN
+}
+
 export function flight(
   p: Parts,
   o: {
@@ -193,9 +211,7 @@ export function flight(
     yBottom: number
   },
 ): number {
-  const RISE = 0.2
-  const RUN = 0.32
-  const n = Math.max(1, Math.round((o.yTop - o.yBottom) / RISE))
+  const n = stepsOf(o.yTop, o.yBottom)
   const rise = (o.yTop - o.yBottom) / n
   for (let i = 0; i < n; i++) {
     const u0 = o.start + o.sign * i * RUN
