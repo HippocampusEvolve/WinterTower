@@ -12,7 +12,7 @@
 import * as THREE from 'three'
 import { NO_NORMALS_LAYER } from '../atmosphere'
 import { MAT, setSnowShelters } from './materials'
-import { Parts, rng, keepUV } from './parts'
+import { Parts, rng, keepUV, cylinderUV, sphereUV } from './parts'
 import { piece } from './fixtures'
 import { floorOf, heightAt, lowestIn } from './terrain'
 import {
@@ -30,12 +30,23 @@ import {
   type Spot,
 } from './layout'
 import { stairProfile } from './stairProfile'
-import { Interiors, wall, flight, type Hole } from './interior'
+import { Interiors, wall, flight, flightRun, type Hole } from './interior'
 import { furnishRoom, furnishCorridor, furnishCore, furnishLobby, furnishDomeHall, type Kit } from './furnish'
 import type { Warm } from './glow'
 
 // Тёплые источники живут отдельными списками: их наличие проверяется по правилу
 // «3-4 пятна», а ореолы и отсветы на земле собираются из тех же записей (glow.ts).
+
+/**
+ * Нахлёст накладной детали на кромку проёма — два сантиметра.
+ *
+ * Правило одно на весь мир: рама, косяк, подоконник и переплёт ЗАХОДЯТ
+ * в проём (или в тело стены), а не приставляются к нему вровень. Вровень
+ * их грань ложится в ту же плоскость, что откос, обе смотрят в одну сторону,
+ * и глубинный буфер выбирает между ними по пикселям — в кадре это полосы
+ * вдоль всей рамы. Два сантиметра спор снимают и в проёме не читаются.
+ */
+const OVER = 0.02
 
 const walls = new Parts()
 const dark = new Parts()
@@ -71,8 +82,11 @@ const KIT: Kit = { metal, dark, hot, paper, cloth, enamel, stain, wood, rust }
  */
 function roofCap(x0: number, x1: number, zLo: number, zHi: number, top: number) {
   const P = 0.32
-  dark.slab(x0, x1, zLo, zLo + P, top, 0.55)
-  dark.slab(x0, x1, zHi - P, zHi, top, 0.55)
+  // Четыре стороны СМЫКАЮТСЯ, а не накладываются: внахлёст в каждом углу два
+  // куска стоят один в другом, и верх с низом у них в одной плоскости - четыре
+  // квадрата полос на каждой крыше. Поперечные идут между продольными.
+  dark.slab(x0 + P, x1 - P, zLo, zLo + P, top, 0.55)
+  dark.slab(x0 + P, x1 - P, zHi - P, zHi, top, 0.55)
   dark.slab(x0, x0 + P, zLo, zHi, top, 0.55)
   dark.slab(x1 - P, x1, zLo, zHi, top, 0.55)
 }
@@ -95,12 +109,30 @@ function shell(x0: number, x1: number, z0: number, z1: number, floor: number, h:
  * обсерваторией (см. terrain.ts), после неё перепад везде меньше трёх метров,
  * а предел остаётся страховкой от новых кривых пятен.
  */
-function plinth(x0: number, x1: number, z0: number, z1: number, floor: number, maxDepth = 9) {
+const SKIRT = 0.25
+
+/**
+ * `skirt` — свес цоколя по X, по одному числу на сторону.
+ *
+ * У стоящих ВПРИТЫК зданий свес обнуляется с той стороны, где сосед: иначе два
+ * цоколя лезут друг в друга на полметра, и там, где их верхние грани сходятся
+ * на одной отметке, идут полосы во всю длину примыкания (12.6 м у комплекса с
+ * куполом). Снаружи свес и не нужен: примыкание — не фасад, его не видно.
+ */
+function plinth(
+  x0: number,
+  x1: number,
+  z0: number,
+  z1: number,
+  floor: number,
+  maxDepth = 9,
+  skirt: [number, number] = [SKIRT, SKIRT],
+) {
   const bottom = Math.max(
     lowestIn(x0, x1, Math.min(z0, z1), Math.max(z0, z1)) - 2.5,
     floor - maxDepth,
   )
-  dark.slab(x0 - 0.25, x1 + 0.25, Math.min(z0, z1), Math.max(z0, z1), bottom, floor - bottom)
+  dark.slab(x0 - skirt[0], x1 + skirt[1], Math.min(z0, z1), Math.max(z0, z1), bottom, floor - bottom)
 }
 
 /**
@@ -113,8 +145,10 @@ function windowXneg(x: number, y: number, z: number, w: number, h: number, kind:
   // Рама тонкая и светлая. Стена смотрит в -X, поэтому ширина окна лежит по Z:
   // верх/низ — перемычки, тонкие по Y и длинные по Z, боковины наоборот.
   const F = 0.055
-  metal.box(0.08, F, w + F * 2, x - 0.02, y + h / 2 + F / 2, z)
-  metal.box(0.08, F, w + F * 2, x - 0.02, y - h / 2 - F / 2, z)
+  // Перемычки МЕЖДУ боковинами: внахлёст их лицевые грани лежат в одной
+  // плоскости и смотрят в одну сторону — полосы в четырёх углах каждой рамы.
+  metal.box(0.08, F, w, x - 0.02, y + h / 2 + F / 2, z)
+  metal.box(0.08, F, w, x - 0.02, y - h / 2 - F / 2, z)
   metal.box(0.08, h + F * 2, F, x - 0.02, y, z - w / 2 - F / 2)
   metal.box(0.08, h + F * 2, F, x - 0.02, y, z + w / 2 + F / 2)
   // Переплёт: вертикальный импост и горизонтальная планка. Без него светящееся
@@ -127,7 +161,7 @@ function windowXneg(x: number, y: number, z: number, w: number, h: number, kind:
   // верхнюю планку рамы кладёт шейдерный слой — накладных плит здесь больше
   // нет, они были 4 см высотой и читались белой полосой поперёк рамы.
   const OUT = 0.16
-  dark.box(OUT, 0.05, w + F * 2, x - OUT / 2, y - h / 2 - F, z)
+  dark.box(OUT + OVER, 0.05, w + F * 2, x - OUT / 2 + OVER / 2, y - h / 2 - F, z)
 }
 
 /**
@@ -144,18 +178,25 @@ function windowOpenZ(z: number, t: number, y: number, x: number, w: number, h: n
   piece('окно', 'glass', () => {
     pane.add(new THREE.PlaneGeometry(w, h), x, y, z - t / 2, 0, 0, 0)
     const F = 0.06
-    for (const fz of [z - 0.03, z - t + 0.03]) {
-      metal.box(w + F * 2, F, 0.06, x, y + h / 2 + F / 2, fz)
-      metal.box(w + F * 2, F, 0.06, x, y - h / 2 - F / 2, fz)
-      metal.box(F, h + F * 2, 0.06, x - w / 2 - F / 2, y, fz)
-      metal.box(F, h + F * 2, 0.06, x + w / 2 + F / 2, y, fz)
+    // Обвязка с нахлёстом в проём — см. `OVER` вверху файла.
+    //
+    // Утоплена в проём на `OVER` и по глубине: гранью вровень со стеной она
+    // ложилась с ней в одну плоскость, обе смотрели наружу — полосы по всей
+    // ленте окон. Перемычки идут МЕЖДУ боковинами, а не поверх них: внахлёст
+    // их лицевые грани спорят друг с другом в четырёх углах каждой рамы.
+    for (const fz of [z - 0.03 - OVER, z - t + 0.03 + OVER]) {
+      metal.box(w - OVER * 2, F, 0.06, x, y + h / 2 + F / 2 - OVER, fz)
+      metal.box(w - OVER * 2, F, 0.06, x, y - h / 2 - F / 2 + OVER, fz)
+      metal.box(F, h + F * 2, 0.06, x - w / 2 - F / 2 + OVER, y, fz)
+      metal.box(F, h + F * 2, 0.06, x + w / 2 + F / 2 - OVER, y, fz)
     }
-    metal.box(0.045, h, 0.05, x, y, z - t / 2)
-    metal.box(w, 0.04, 0.05, x, y + h * 0.16, z - t / 2)
+    metal.box(0.045, h + OVER * 2, 0.05, x, y, z - t / 2)
+    metal.box(w + OVER * 2, 0.04, 0.05, x, y + h * 0.16, z - t / 2)
     // Отлив снаружи и подоконник изнутри. Снег на отливе — шейдерный.
+    // Оба заходят в стену на `OVER`: вровень их торец спорит с ней.
     const OUT = 0.16
-    dark.box(w + F * 2, 0.05, OUT, x, y - h / 2 - F, z + OUT / 2)
-    dark.slab(x - w / 2 - F, x + w / 2 + F, z - t - 0.22, z - t, y - h / 2 - F, 0.05)
+    dark.box(w + F * 2, 0.05, OUT + OVER, x, y - h / 2 - F, z + OUT / 2 - OVER / 2)
+    dark.slab(x - w / 2 - F, x + w / 2 + F, z - t - 0.22, z - t + OVER, y - h / 2 - F, 0.05)
   })
 }
 
@@ -251,7 +292,12 @@ function facadeGear(s: Spot, floor: number, rnd: () => number) {
 function streak(x: number, yBottom: number, z: number, w: number, h: number) {
   // `keepUV` — потому что альфа-карта натянута НА потёк целиком (`ClampToEdge`),
   // а не намощена: метрическая развёртка размазала бы её в одну полосу.
-  grime.add(keepUV(new THREE.PlaneGeometry(w, h)), x - 0.025, yBottom + h / 2, z, 0, -Math.PI / 2, 0)
+  //
+  // Отступ от стены БОЛЬШЕ, чем у брызг у цоколя (0.025): накладки лежат
+  // слоями, потёк поверх брызг. На одной отметке они попадали в одну плоскость
+  // и, хоть глубину не пишут, смешивались вдвое — грязь темнела вдвое там, где
+  // потёк проходил по брызгам.
+  grime.add(keepUV(new THREE.PlaneGeometry(w, h)), x - 0.04, yBottom + h / 2, z, 0, -Math.PI / 2, 0)
 }
 
 /** Сосульки под кромкой: конусы вниз, разной длины, с пропусками. */
@@ -293,22 +339,31 @@ function windowOpen(x: number, t: number, y: number, z: number, w: number, h: nu
     // а сам лист остаётся ровно один — он двусторонний (`MAT.pane`).
     pane.add(new THREE.PlaneGeometry(w, h), x + t / 2, y, z, 0, -Math.PI / 2, 0)
     const F = 0.06
-    // Обвязка по периметру проёма с обеих сторон стены.
-    for (const fx of [x + 0.03, x + t - 0.03]) {
-      metal.box(0.06, F, w + F * 2, fx, y + h / 2 + F / 2, z)
-      metal.box(0.06, F, w + F * 2, fx, y - h / 2 - F / 2, z)
-      metal.box(0.06, h + F * 2, F, fx, y, z - w / 2 - F / 2)
-      metal.box(0.06, h + F * 2, F, fx, y, z + w / 2 + F / 2)
+    // Обвязка по периметру проёма с обеих сторон стены. Каждый брусок ЗАХОДИТ
+    // в проём на `OVER`, а не приставляется к его кромке: приставленный,
+    // он ложится гранью в плоскость откоса — обе смотрят внутрь проёма,
+    // и глубинный буфер выбирает между ними по пикселям (полосы вдоль рамы,
+    // то же, что лечит `OVER` у дверного косяка).
+    // Обвязка утоплена в проём и ПО ГЛУБИНЕ: лицевой гранью вровень со стеной
+    // она ложилась с ней в одну плоскость. Перемычки идут между боковинами,
+    // иначе спорят с ними в четырёх углах рамы.
+    for (const fx of [x + 0.03 + OVER, x + t - 0.03 - OVER]) {
+      metal.box(0.06, F, w - OVER * 2, fx, y + h / 2 + F / 2 - OVER, z)
+      metal.box(0.06, F, w - OVER * 2, fx, y - h / 2 - F / 2 + OVER, z)
+      metal.box(0.06, h + F * 2, F, fx, y, z - w / 2 - F / 2 + OVER)
+      metal.box(0.06, h + F * 2, F, fx, y, z + w / 2 + F / 2 - OVER)
     }
     // Переплёт: импост и планка. Стоят в плоскости стекла, а не у грани, —
-    // иначе снаружи видно один переплёт, изнутри другой.
-    metal.box(0.05, h, 0.045, x + t / 2, y, z)
-    metal.box(0.05, 0.04, w, x + t / 2, y + h * 0.16, z)
+    // иначе снаружи видно один переплёт, изнутри другой. Концы утоплены
+    // в бетон на `OVER` по той же причине: вровень с откосом они спорят с ним.
+    metal.box(0.05, h + OVER * 2, 0.045, x + t / 2, y, z)
+    metal.box(0.05, 0.04, w + OVER * 2, x + t / 2, y + h * 0.16, z)
     // Наружный отлив: толщину окну даёт выступ под ним. Снег на нём — слой.
+    // Задней гранью уходит в стену, а не встаёт с ней вровень.
     const OUT = 0.16
-    dark.box(OUT, 0.05, w + F * 2, x - OUT / 2, y - h / 2 - F, z)
-    // Подоконник изнутри.
-    dark.slab(x + t, x + t + 0.22, z - w / 2 - F, z + w / 2 + F, y - h / 2 - F, 0.05)
+    dark.box(OUT + OVER, 0.05, w + F * 2, x - OUT / 2 + OVER / 2, y - h / 2 - F, z)
+    // Подоконник изнутри — тоже с заходом в стену.
+    dark.slab(x + t - OVER, x + t + 0.22, z - w / 2 - F, z + w / 2 + F, y - h / 2 - F, 0.05)
   })
 }
 
@@ -371,15 +426,15 @@ function doorway(x: number, xIn: number, z: number, w: number, h: number, floor:
 
 function doorFrame(x: number, xIn: number, z: number, w: number, h: number, floor: number) {
   const F = 0.12
-  // Косяк ЗАХОДИТ в проём на `OVER`, а не прикладывается к нему заподлицо.
-  // Заподлицо его боковина ложится в ту же плоскость, что откос простенка,
-  // обе смотрят внутрь проёма — и глубинный буфер выбирает между ними по
-  // пикселям: в кадре косяк идёт полосами. Полтора сантиметра нахлёста
-  // убирают спор и в проёме незаметны.
-  const OVER = 0.015
+  // Косяк ЗАХОДИТ в проём на `OVER` (см. константу вверху файла), а не
+  // прикладывается к нему заподлицо.
   dark.slab(x - F, xIn + F, z - w / 2 - F, z - w / 2 + OVER, floor, h + F)
   dark.slab(x - F, xIn + F, z + w / 2 - OVER, z + w / 2 + F, floor, h + F)
-  dark.slab(x - F, xIn + F, z - w / 2 - F, z + w / 2 + F, floor + h - OVER, F)
+  // Перемычка идёт МЕЖДУ боковинами, а не поверх них: поверх её лицевые грани
+  // ложатся в одну плоскость с гранями косяка и смотрят туда же - полосы в
+  // верхних углах каждого проёма, а проёмов в мире два десятка. Боковины сами
+  // заходят в проём на `OVER`, поэтому перемычка ровно заполняет просвет.
+  dark.slab(x - F, xIn + F, z - w / 2 + OVER, z + w / 2 - OVER, floor + h - OVER, F)
 }
 
 /** Ступеньки от порога до земли. Число ступеней — по фактическому перепаду. */
@@ -389,7 +444,10 @@ function threshold(x: number, z: number, floor: number, ground: number, halfW = 
   const steps = Math.max(1, Math.ceil(rise / 0.24))
   for (let i = 0; i < steps; i++) {
     const y = ground + (rise * i) / steps
-    dark.slab(x - 0.35 - (steps - i) * 0.34, x, z - halfW, z + halfW, y - 0.1, rise / steps + 0.1)
+    // Без нахлёста вниз (см. `porch`) и НЕ доходя до стены: у стены на той же
+    // отметке лежит свес цоколя, и верх верхней ступени попадал с ним в одну
+    // плоскость. Свес и есть последняя ступень - его верх это пол.
+    dark.slab(x - 0.35 - (steps - i) * 0.34, x - SKIRT, z - halfW, z + halfW, y, rise / steps)
   }
 }
 
@@ -428,7 +486,11 @@ function porch(x: number, zEdge: number, floor: number, ground: number, zStop: n
 
   for (let i = 0; i < steps; i++) {
     const y = ground + (rise * i) / steps
-    dark.slab(x - halfW, x + halfW, zEdge, zEdge + 0.35 + (steps - i) * 0.34, y - 0.1, rise / steps + 0.1)
+    // Ступень стоит РОВНО на предыдущей, без нахлёста вниз. Нахлёст в 10 см
+    // клал боковую грань каждой ступени в одну плоскость с гранью соседней и
+    // смотрели они в одну сторону - полосы по всему борту крыльца. Щели он не
+    // держал: низ ступени и верх нижней считаются одним и тем же выражением.
+    dark.slab(x - halfW, x + halfW, zEdge, zEdge + 0.35 + (steps - i) * 0.34, y, rise / steps)
   }
 }
 
@@ -479,7 +541,8 @@ function porchSide(
   for (let i = 0; i < steps; i++) {
     const y = ground + (rise * i) / steps
     const xb = xa + dir * (steps - i) * RUN
-    dark.slab(Math.min(xa, xb), Math.max(xa, xb), zEdge, z1, y - 0.1, rise / steps + 0.1)
+    // Без нахлёста вниз, по той же причине, что в `porch`.
+    dark.slab(Math.min(xa, xb), Math.max(xa, xb), zEdge, z1, y, rise / steps)
   }
 }
 
@@ -523,7 +586,16 @@ function wingSection(i: number, inter: Interiors, group: THREE.Group, warm: Warm
   for (const w of wingWins(i)) {
     if (w.open) facade.push({ at: w.z, w: WING_WIN.w, h: WING_WIN.h, sill: WING_WIN.mid - WING_WIN.h / 2 })
   }
-  wall(walls, { axis: 'z', from: s.z0, to: s.z1, at: s.x0, t: T, y: floor, h: H, holes: facade })
+  // Продольные стены идут МЕЖДУ поперечными, а не во всю длину секции.
+  //
+  // Во всю длину их торец выходит ровно в плоскость стыка секций — той самой,
+  // где стоит поперечная стена, и смотрит туда же, куда она. В кадре это полосы
+  // по всему торцу корпуса, в коде не видно ничего: обе стены построены
+  // правильными числами, беда в том, что числа общие. `OVER` держит нахлёст,
+  // чтобы вместо совпавших плоскостей не появилась щель.
+  const zA = s.z0 + T - OVER
+  const zB = s.z1 - T + OVER
+  wall(walls, { axis: 'z', from: zA, to: zB, at: s.x0, t: T, y: floor, h: H, holes: facade })
   if (i === P.entry.wing) {
     doorway(s.x0, s.x0 + T, DOOR.z, DOOR.w, DOOR.h, floor)
     threshold(s.x0, DOOR.z, floor, heightAt(s.x0 - 1.1, DOOR.z))
@@ -549,16 +621,31 @@ function wingSection(i: number, inter: Interiors, group: THREE.Group, warm: Warm
       // Стена у марша идёт до поднятого потолка: иначе проём срезан перемычкой.
       if (sill > 0 && zone) hWall = zone.ceil - floor
     }
-    wall(walls, { axis: 'x', from: s.x0, to: back, at, t: T, y: floor, h: hWall, holes })
-    // Кусок стены над проёмом до обычного потолка, если стена оказалась выше.
-    if (hWall > H + 0.01) walls.slab(s.x0, P.corr.x0 - T, at, at + T, floor + H, hWall - H)
+    // Стена строится ДВУМЯ пролётами, и это не украшательство.
+    //
+    // Поднят потолок только у коридора — там марш и проём в соседнюю секцию.
+    // Над комнатами потолок обычный, а выше него до самой крыши идёт бетон
+    // (`walls.slab` ниже, «потолок»). Стена, поднятая на всю длину, входила в
+    // этот бетон, и обе поверхности выходили на торец секции одной плоскостью,
+    // смотрящей в одну сторону: 26 м² полос ровно на стыке секций. Считает это
+    // внешняя проверка геометрии, в кадре и в коде не видно ничего.
+    //
+    // Отдельного куска над проёмом тоже нет: `wall` уже кладёт перемычку до
+    // своей высоты, и второй кусок ложился поверх первого.
+    // Верхний пролёт ЗАХОДИТ под нижний на `OVER`: встык их торцы легли бы в
+    // одну плоскость с гранью коридорной перегородки, которая стоит ровно
+    // здесь же, — и вместо снятых 26 м² полос появились бы новые 6.5.
+    const split = P.corr.x0 - T
+    wall(walls, { axis: 'x', from: s.x0, to: split, at, t: T, y: floor, h: H, holes })
+    wall(walls, { axis: 'x', from: split - OVER, to: back, at, t: T, y: floor, h: hWall, holes })
   }
 
   // --- Перегородка коридора с дверями в комнаты ------------------------------
+  // Тоже между поперечными стенами, см. `zA`/`zB` у фасада.
   wall(walls, {
     axis: 'z',
-    from: s.z0,
-    to: s.z1,
+    from: zA,
+    to: zB,
     at: P.corr.x0 - T,
     t: T,
     y: floor,
@@ -573,7 +660,9 @@ function wingSection(i: number, inter: Interiors, group: THREE.Group, warm: Warm
     const b = rooms[k]
     const lo = Math.min(a.z0, b.z0) === a.z0 ? a : b
     const hi = lo === a ? b : a
-    walls.slab(s.x0, P.corr.x0 - T, lo.z1, hi.z0, floor, H)
+    // От ВНУТРЕННЕЙ грани фасада, с тем же нахлёстом: от наружной перегородка
+    // выходит торцом в плоскость фасада и спорит с ним по всей высоте.
+    walls.slab(s.x0 + T - OVER, P.corr.x0 - T, lo.z1, hi.z0, floor, H)
   }
 
   // --- Потолок. Над маршем он выше: иначе проём в соседнюю секцию упрётся -----
@@ -835,7 +924,9 @@ export function buildBuildings(): {
     const floor = floorOf(CORE)
     const R = CORE_ROOM
     const T = R.wallT
-    plinth(x0, x1, z0, z1, floor)
+    // Слева комплекс примыкает к куполу (`CORE.x0` = `DOME_BASE.x1`) — свеса с
+    // этой стороны нет, он лез бы в цоколь купола.
+    plinth(x0, x1, z0, z1, floor, 9, [0, SKIRT])
     roofCap(x0, x1, z0, z1, floor + h)
     // Второй объём поверх первого: на референсе у среднего корпуса ступенчатая
     // крыша. Раньше он ставился рядом, вглубь по Z, — на полке места нет,
@@ -845,7 +936,12 @@ export function buildBuildings(): {
     // --- Операторская: корпус полый, стены идут по периметру пятна -----------
     // пола отдельной плитой нет — им служит верх цоколя, см. `wingSection`
     walls.slab(x0, x1, z0, z1, floor + R.h, h - R.h) // потолок и чердак
-    wall(walls, { axis: 'x', from: x0, to: x1, at: z0, t: T, y: floor, h: R.h })
+    // Торцевые стены — между боковыми, с нахлёстом: то же правило угла, что в
+    // крыле и в зале обсерватории (иначе торец выходит в плоскость боковой
+    // стены и спорит с ней по всей высоте).
+    const cx0 = x0 + T - OVER
+    const cx1 = x1 - T + OVER
+    wall(walls, { axis: 'x', from: cx0, to: cx1, at: z0, t: T, y: floor, h: R.h })
     wall(walls, { axis: 'z', from: z0, to: z1, at: x0, t: T, y: floor, h: R.h })
     wall(walls, { axis: 'z', from: z0, to: z1, at: x1 - T, t: T, y: floor, h: R.h })
     // Торец к игроку: в нём и лента окон, и единственная дверь. Окна — проёмы,
@@ -853,8 +949,8 @@ export function buildBuildings(): {
     // горит внутри: раньше это были два независимых прямоугольника.
     wall(walls, {
       axis: 'x',
-      from: x0,
-      to: x1,
+      from: cx0,
+      to: cx1,
       at: z1 - T,
       t: T,
       y: floor,
@@ -913,19 +1009,25 @@ export function buildBuildings(): {
   // Радиус 6.3 → 7.0: с прежним купол читался вдвое мельче референсного.
   {
     const { x, z, r: R, drumH } = DOME
+    // Гранёность барабана и купола — ОДНО число на четыре поверхности
+    // (наружные и внутренние). Разойдутся — вершины на стыке перестанут
+    // совпадать, и вдоль всей окружности пойдут щели.
+    const RS = 32
     const B = DOME_BASE
     const floor = floorOf(B)
     const T = DOME_ROOM.wallT
     const drumY = floor + B.h
-    plinth(B.x0, B.x1, B.z0, B.z1, floor)
+    // Справа к куполу примыкает комплекс — та же пара, свеса с этой стороны нет.
+    plinth(B.x0, B.x1, B.z0, B.z1, floor, 9, [SKIRT, 0])
     // Парапет без снежной шапки: `roofCap` кладёт снег по всему пятну, а здесь
     // отметка крыши цоколя — это ПОЛ ЗАЛА и проём лестницы. Шапка легла поверх
     // проёма и остановила подъём на середине марша, упершись игроку в макушку;
     // заодно она была бы полом зала — снег внутри обсерватории.
     {
       const Pr = 0.32
-      dark.slab(B.x0, B.x1, B.z0, B.z0 + Pr, drumY, 0.55)
-      dark.slab(B.x0, B.x1, B.z1 - Pr, B.z1, drumY, 0.55)
+      // Смыкаются, а не накладываются - см. `roofCap`.
+      dark.slab(B.x0 + Pr, B.x1 - Pr, B.z0, B.z0 + Pr, drumY, 0.55)
+      dark.slab(B.x0 + Pr, B.x1 - Pr, B.z1 - Pr, B.z1, drumY, 0.55)
       dark.slab(B.x0, B.x0 + Pr, B.z0, B.z1, drumY, 0.55)
       dark.slab(B.x1 - Pr, B.x1, B.z0, B.z1, drumY, 0.55)
     }
@@ -937,11 +1039,21 @@ export function buildBuildings(): {
     // барабана**. Первый заход поднимал игрока в дальний угол цоколя (радиус
     // 7.93 при внутреннем радиусе барабана 7.9) — то есть ровно в стену зала:
     // подъём вставал на середине, а спуск сверху работал. Теперь марш идёт
-    // от дальней стены ВВЕРХ к центру, и выход лежит в 7.0 м от оси купола.
+    // от дальней стены ВВЕРХ к центру.
+    //
+    // Ставится он ОТ НИЗА, а не от верха, и это вторая правка того же места.
+    // Верх задавался числом (`B.z1 − 7.1`), низ получался сам — и упирался
+    // в дальнюю стену: последняя ступень кончалась на 4 см ЗА её внутренней
+    // гранью. Подойти к маршу с торца было нельзя, оставалось протискиваться
+    // сбоку вдоль стены, и лестница читалась воткнутой в бетон. Теперь
+    // площадка внизу задана явно, а верх считается длиной марша (`flightRun`).
     const sx0 = B.x0 + DOME_ROOM.stairX
     const sx1 = sx0 + DOME_ROOM.stairWidth
     const ceilY = drumY - 0.3
-    const zTop = B.z1 - 7.1 // площадка выхода в зал
+    /** Площадка перед первой ступенью: на неё сходишь с марша и с неё заходишь. */
+    const LANDING = 1.7
+    const zBottom = B.z0 + T + LANDING
+    const zTop = zBottom + flightRun(drumY, floor) // верхняя ступень — вровень с полом зала
     piece('марш в зал', 'stair', () =>
       flight(walls, {
         axis: 'z',
@@ -956,27 +1068,67 @@ export function buildBuildings(): {
 
     // Проём в перекрытии — над ВЕРХНЕЙ частью марша: ниже по маршу высоты
     // до перекрытия хватает, и дыру там держать незачем.
+    //
+    // Кончается он РОВНО на верхней ступени. Был запас в полметра «перед
+    // площадкой выхода» — и эти полметра оказывались дырой в полу зала прямо
+    // перед сходящим с лестницы: перекрытия там уже нет, а ступеней ещё нет.
     const zHole = zTop - 5.0
     // пол вестибюля — верх цоколя, см. `wingSection`
     walls.slab(B.x0, sx0, B.z0, B.z1, ceilY, 0.3) // перекрытие левее марша
     walls.slab(sx1, B.x1, B.z0, B.z1, ceilY, 0.3) // и правее
     walls.slab(sx0, sx1, B.z0, zHole, ceilY, 0.3) // за дальним концом проёма
-    walls.slab(sx0, sx1, zTop + 0.5, B.z1, ceilY, 0.3) // и перед площадкой выхода
+    walls.slab(sx0, sx1, zTop, B.z1, ceilY, 0.3) // и от верхней ступени к двери
+    // Подшивка зала за пятном цоколя.
+    //
+    // Барабан круглый и шире цоколя: по x он вписан в пятно ровно (8.9 при
+    // полуширине 8.9), а по z вылезает почти на метр с каждой стороны. Пол
+    // зала — это перекрытие цоколя, то есть кладётся по ПЯТНУ, и вдоль
+    // северной и южной стены зала пола не было вовсе: луч вниз пролетал
+    // 8.7 м до земли. Дыра шириной в полметра и длиной в шесть — сквозная,
+    // с улицы сквозь неё било светом, и в кадре она читалась щелями «в самой
+    // башне». Нашлась не глазами: сеткой лучей по кругу зала.
+    //
+    // Закрывается полосами поперёк, у каждой своя длина по хорде круга.
+    // Длина берётся по БЛИЖНЕЙ к оси кромке полосы — тогда каждая заходит
+    // концом в тело стены (её толщина 0.3), а не не достаёт до неё.
+    {
+      const Rin = R - 0.3
+      const STEP = 0.25
+      for (let px = x - Rin; px < x + Rin - 1e-4; px += STEP) {
+        const pxb = Math.min(px + STEP, x + Rin)
+        const near = Math.min(Math.abs(px - x), Math.abs(pxb - x))
+        const reach = Math.sqrt(Math.max(0, Rin * Rin - near * near))
+        if (z - reach < B.z0) walls.slab(px, pxb, z - reach, B.z0, ceilY, 0.3)
+        if (z + reach > B.z1) walls.slab(px, pxb, B.z1, z + reach, ceilY, 0.3)
+      }
+    }
     // Ограждение проёма: без него с площадки зала шагаешь прямо в пустоту.
+    // По трём сторонам — обе длинные кромки и дальний торец; открыт только
+    // край над верхней ступенью, то есть сам сход на лестницу.
     piece('ограждение проёма', 'furn', () => {
-      for (let zz = zHole; zz < zTop + 0.5; zz += 1.4) metal.pipe(0.05, 1.05, sx1, drumY, zz, 5)
-      metal.strut(0.045, sx1, drumY + 1.05, zHole, sx1, drumY + 1.05, zTop + 0.5)
+      const H = 1.05
+      for (const sx of [sx0, sx1]) {
+        for (let zz = zHole; zz < zTop - 0.01; zz += 1.4) metal.pipe(0.05, H, sx, drumY, zz, 5)
+        metal.pipe(0.05, H, sx, drumY, zTop, 5)
+        metal.strut(0.045, sx, drumY + H, zHole, sx, drumY + H, zTop)
+      }
+      metal.strut(0.045, sx0, drumY + H, zHole, sx1, drumY + H, zHole)
     })
 
     const dz = B.z1
     const dr = DOME_ROOM.door
-    wall(walls, { axis: 'x', from: B.x0, to: B.x1, at: B.z0, t: T, y: floor, h: B.h - 0.3 })
+    // Торцевые стены идут МЕЖДУ боковыми: во всю ширину их торец ложится в ту же
+    // плоскость, что наружная грань боковой стены, и смотрит туда же — полосы по
+    // всей высоте угла. Нахлёст `OVER` держит угол плотным.
+    const bx0 = B.x0 + T - OVER
+    const bx1 = B.x1 - T + OVER
+    wall(walls, { axis: 'x', from: bx0, to: bx1, at: B.z0, t: T, y: floor, h: B.h - 0.3 })
     wall(walls, { axis: 'z', from: B.z0, to: B.z1, at: B.x0, t: T, y: floor, h: B.h - 0.3 })
     wall(walls, { axis: 'z', from: B.z0, to: B.z1, at: B.x1 - T, t: T, y: floor, h: B.h - 0.3 })
     wall(walls, {
       axis: 'x',
-      from: B.x0,
-      to: B.x1,
+      from: bx0,
+      to: bx1,
       at: dz - T,
       t: T,
       y: floor,
@@ -1057,9 +1209,14 @@ export function buildBuildings(): {
       geo.computeVertexNormals() // и нормали пересчитываются внутрь
       return geo
     }
-    walls.add(inner(new THREE.CylinderGeometry(R - 0.3, R - 0.3, drumH, 28, 1, true)), x, drumY + drumH / 2, z)
     walls.add(
-      inner(new THREE.SphereGeometry(R - 0.3, 30, 16, 0, Math.PI * 2, 0, Math.PI / 2)),
+      inner(cylinderUV(new THREE.CylinderGeometry(R - 0.3, R - 0.3, drumH, RS, 1, true), R - 0.3, drumH)),
+      x,
+      drumY + drumH / 2,
+      z,
+    )
+    walls.add(
+      inner(sphereUV(new THREE.SphereGeometry(R - 0.3, RS, 16, 0, Math.PI * 2, 0, Math.PI / 2), R - 0.3, Math.PI / 2)),
       x,
       drumY + drumH,
       z,
@@ -1084,7 +1241,7 @@ export function buildBuildings(): {
     // openEnded: у цилиндра по умолчанию есть донышко, и оно ложится сплошным
     // диском на отметке пола зала — поверх проёма лестницы. Снаружи этого
     // не видно (диск внутри), а подъём упирался в него головой.
-    walls.add(new THREE.CylinderGeometry(R, R, drumH, 28, 1, true), x, drumY + drumH / 2, z)
+    walls.add(cylinderUV(new THREE.CylinderGeometry(R, R, drumH, RS, 1, true), R, drumH), x, drumY + drumH / 2, z)
     // кольцо мелких окон по барабану
     for (let i = 0; i < 12; i++) {
       const a = (i / 12) * Math.PI * 2
@@ -1100,7 +1257,18 @@ export function buildBuildings(): {
     }
 
     const domeY = drumY + drumH
-    walls.add(new THREE.SphereGeometry(R + 0.2, 30, 16, 0, Math.PI * 2, 0, Math.PI / 2), x, domeY, z)
+    // Полусфера ТОГО ЖЕ радиуса, что барабан, и с тем же числом сегментов.
+    // Раньше она была шире на 0.2 и гранёна на 30 против 28: свес висел над
+    // барабаном открытым кольцом, а на самом стыке вершины двух поверхностей
+    // не совпадали — снежный слой (`snowify`) поднимает их по своим нормалям
+    // и разводил в стороны. В кадре это читалось пунктиром сквозных щелей
+    // по всей окружности купола, изнутри — светлыми штрихами на потолке зала.
+    walls.add(
+      sphereUV(new THREE.SphereGeometry(R, RS, 16, 0, Math.PI * 2, 0, Math.PI / 2), R, Math.PI / 2),
+      x,
+      domeY,
+      z,
+    )
     // щель
     dark.box(1.5, 1.2, R * 2 + 1.2, x - R * 0.35, domeY + R * 0.62, z, 0)
   }
