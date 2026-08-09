@@ -70,10 +70,22 @@ export function createAmbient(wind: Wind) {
   /** Запускается по первому жесту пользователя. Повторные вызовы безвредны. */
   function start() {
     if (ctx) {
-      if (ctx.state === 'suspended') void ctx.resume()
+      // `interrupted` - состояние Safari после звонка или Siri: лечится тем же
+      // resume, но под `=== 'suspended'` не попадало и оставляло мир немым.
+      if (ctx.state !== 'running') void ctx.resume()
       return
     }
     ctx = new AudioContext()
+    // Ушли со вкладки - замолкаем. Кадры останавливает браузер сам, а звук
+    // живёт своей жизнью: ветер закольцован и продолжал бы выть в наушниках
+    // соседней вкладки. Возврат заодно поднимает контекст, заглохший не по
+    // нашей воле - на таче гейт после входа не появляется, и другого случая
+    // позвать resume попросту нет.
+    document.addEventListener('visibilitychange', () => {
+      if (!ctx) return
+      if (document.hidden) void ctx.suspend()
+      else if (ctx.state !== 'running') void ctx.resume()
+    })
     const buf = noiseBuffer(ctx)
 
     const src = () => {

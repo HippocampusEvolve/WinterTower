@@ -128,6 +128,16 @@ export function createPlayer(
   const wish = new THREE.Vector3()
 
   function readInput(dt: number) {
+    // Пока игрок не в мире (заставка, экран входа, пауза по Esc), клавиши не
+    // значат ничего. Раньше их читали всегда: за полупрозрачным гейтом тело
+    // послушно шло на WASD, и с площадки можно было уйти вслепую - до сброса
+    // по высоте падения, то есть на другой конец мира. У рук такая проверка
+    // стоит давно (hands/index.ts), у тела её не было.
+    if (!look.locked) {
+      keys.clear()
+      touch.f = touch.r = 0
+      touch.run = touch.jump = false
+    }
     camera.getWorldDirection(fwd)
     fwd.y = 0
     fwd.normalize()

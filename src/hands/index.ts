@@ -228,7 +228,13 @@ export function createHands(opts: {
     camera.getWorldDirection(_dir)
     const x = playerPos.x + _dir.x * 0.8
     const z = playerPos.z + _dir.z * 0.8
-    held.plant(x, surfaceAt(x, z, playerPos.y), z, Math.atan2(_dir.x, _dir.z))
+    const y = surfaceAt(x, z, playerPos.y)
+    // Под ногами обрыв: точка втыкания в 0.8 м вперёд бывает уже за кромкой
+    // площадки, и опора там - скала десятью метрами ниже. Воткнутая туда
+    // лопата потеряна навсегда: поднять её можно только с 2.2 м, а второй
+    // лопаты в мире нет. Отказ честнее потери.
+    if (y < playerPos.y - 1.6) return
+    held.plant(x, y, z, Math.atan2(_dir.x, _dir.z))
     sfx.plant()
   }
 
