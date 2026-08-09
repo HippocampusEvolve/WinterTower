@@ -75,6 +75,9 @@ function materialTable(): Map<THREE.Material, Material> {
 
 export type HandsBody = ViewBody & { position: THREE.Vector3 }
 
+/** Что показывать на тач-кнопках. Объект переиспользуется, см. `buttons`. */
+export type TouchButtons = { action: boolean; tool: 'shovel' | 'axe' | null }
+
 export type Hands = ReturnType<typeof createHands>
 
 export function createHands(opts: {
@@ -459,12 +462,14 @@ export function createHands(opts: {
       }
     },
 
-    /** Какие тач-кнопки показывать в этом кадре. */
-    buttons(): { action: boolean; tool: 'shovel' | 'axe' | null } {
-      return {
-        action: shovel.held || axe.held || handTarget() !== null,
-        tool: shovel.held ? 'shovel' : axe.held ? 'axe' : null,
-      }
+    /**
+     * Какие тач-кнопки показывать в этом кадре. Ответ пишется в переданный
+     * объект, а не создаётся заново: зовётся каждый кадр.
+     */
+    buttons(out: TouchButtons): TouchButtons {
+      out.action = shovel.held || axe.held || handTarget() !== null
+      out.tool = shovel.held ? 'shovel' : axe.held ? 'axe' : null
+      return out
     },
 
     /** Для отладки из консоли: во что смотрим и чем это считается. */

@@ -21,7 +21,7 @@ import { createShell } from './shell'
 import { createAtmosphere } from './atmosphere'
 import { createLook } from './look'
 import { createPlayer } from './player'
-import { createHands, type Hands } from './hands'
+import { createHands, type Hands, type TouchButtons } from './hands'
 import { createTouch, touchForced, touchSupported, type Touch } from './touch'
 import { createWind } from './wind'
 import { createSnow } from './snow'
@@ -255,6 +255,14 @@ addEventListener('resize', () => {
 // В three r185 Timer живёт в ядре, а не в examples/jsm. Clock объявлен устаревшим.
 const timer = new THREE.Timer()
 
+// Отрисовка мира одной ссылкой: замыкание внутри кадра создавало бы новую
+// функцию шестьдесят раз в секунду впустую.
+const drawWorld = () => atmosphere.composer.render()
+
+// Состояние тач-кнопок живёт одним объектом на всю игру: руки пишут в него,
+// тач читает (см. hands.buttons).
+const buttonState: TouchButtons = { action: false, tool: null }
+
 renderer.setAnimationLoop(() => {
   timer.update()
 
@@ -268,8 +276,8 @@ renderer.setAnimationLoop(() => {
   // Кнопка «рука» появляется, только когда ею есть что сделать, а кнопки
   // инструмента - когда он в руках. Подсказка вещью, а не текстом.
   if (touch?.active && hands) {
-    const b = hands.buttons()
-    touch.setButtons(b.action, b.tool)
+    hands.buttons(buttonState)
+    touch.setButtons(buttonState.action, buttonState.tool)
   }
   wind.update(dt)
   snow.update(dt)
@@ -279,6 +287,6 @@ renderer.setAnimationLoop(() => {
 
   // Мир рисуется внутри рук: они накладывают отдачу на камеру перед кадром
   // и снимают сразу после, а сами идут отдельным проходом поверх.
-  if (hands) hands.renderWorld(renderer, () => atmosphere.composer.render())
+  if (hands) hands.renderWorld(renderer, drawWorld)
   else atmosphere.composer.render()
 })

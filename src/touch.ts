@@ -160,7 +160,8 @@ export function createTouch(opts: TouchOptions) {
   function onStart(e: TouchEvent) {
     if (skip(e)) return
     e.preventDefault()
-    for (const t of Array.from(e.changedTouches)) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i]!
       if (t.clientX < innerWidth * 0.5) {
         if (moveId !== null) continue
         moveId = t.identifier
@@ -179,7 +180,8 @@ export function createTouch(opts: TouchOptions) {
     if (skip(e)) return
     e.preventDefault()
     const p = player.touch
-    for (const t of Array.from(e.changedTouches)) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i]!
       if (t.identifier === moveId) {
         const dx = t.clientX - ox
         const dy = t.clientY - oy
@@ -204,7 +206,8 @@ export function createTouch(opts: TouchOptions) {
     if (skip(e)) return
     e.preventDefault()
     const p = player.touch
-    for (const t of Array.from(e.changedTouches)) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i]!
       if (t.identifier === moveId) {
         moveId = null
         p.f = p.r = 0
