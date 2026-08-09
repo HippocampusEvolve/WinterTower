@@ -64,11 +64,15 @@ export type Touch = ReturnType<typeof createTouch>
  * lock тач-режиму не нужен.
  */
 export function touchSupported(): boolean {
-  return (
-    new URLSearchParams(location.search).has('touch') ||
-    matchMedia('(pointer: coarse)').matches ||
-    'ontouchstart' in window
-  )
+  return touchForced() || matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window
+}
+
+/**
+ * `?touch` - приказ, а не признак: раскладку кнопок смотрят мышью на десктопе.
+ * Выбор режима по нажатию (main.ts) обязан пропустить этот случай вперёд.
+ */
+export function touchForced(): boolean {
+  return new URLSearchParams(location.search).has('touch')
 }
 
 export function createTouch(opts: TouchOptions) {

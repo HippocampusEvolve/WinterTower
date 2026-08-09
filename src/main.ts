@@ -22,7 +22,7 @@ import { createAtmosphere } from './atmosphere'
 import { createLook } from './look'
 import { createPlayer } from './player'
 import { createHands, type Hands } from './hands'
-import { createTouch, touchSupported, type Touch } from './touch'
+import { createTouch, touchForced, touchSupported, type Touch } from './touch'
 import { createWind } from './wind'
 import { createSnow } from './snow'
 import { createHaze } from './haze'
@@ -171,20 +171,36 @@ Object.assign(window, {
 // Вход, пауза и выход на витрину — общий для всех миров экран (shell.ts).
 // Esc браузер обрабатывает сам: он отпускает курсор, а по этому событию
 // возвращается экран паузы.
-const shell = createShell(() => {
+const shell = createShell((ev) => {
   ambient.start() // до жеста пользователя браузер звук не заводит
+  // Чем вошли, тем и играем. Раньше выбор шёл по факту «тач вообще возможен»,
+  // а `'ontouchstart' in window` истинно на любом ноутбуке с сенсорным
+  // экраном: мир уходил в тач-режим, pointer lock не запрашивался никогда, и
+  // мышь не могла повернуть взгляд вовсе - как и Esc открыть паузу.
+  // Спрашиваем само нажатие: палец это был или мышь. Синтетический клик
+  // (Enter с клавиатуры) типа указателя не несёт - тогда решает устройство.
+  const byFinger =
+    touchForced() ||
+    (ev && (ev as PointerEvent).pointerType
+      ? (ev as PointerEvent).pointerType !== 'mouse'
+      : matchMedia('(pointer: coarse)').matches)
   // На таче pointer lock не запрашиваем: курсора там нет, а запрос на
   // некоторых мобильных браузерах ещё и роняет полноэкранный режим. Значит и
   // экран паузы закрывать некому - закрываем сами.
-  if (touch) {
+  if (touch && byFinger) {
     touch.activate()
     shell.close()
   } else {
-    renderer.domElement.requestPointerLock()
+    // Отказ не роняем: браузер держит защитную паузу около секунды после
+    // выхода по Esc. Экран входа остаётся открытым и ждёт второго нажатия.
+    renderer.domElement.requestPointerLock()?.catch?.(() => {})
   }
 })
 document.addEventListener('pointerlockchange', () => {
-  if (touch) return // тач-режим паузой курсора не управляется
+  // Смотрим на фактическую активацию, а не на существование слоя: тач создан
+  // и на ноутбуке с сенсорным экраном, но играют там мышью, и пауза по Esc
+  // обязана работать.
+  if (touch?.active) return // тач-режим паузой курсора не управляется
   if (document.pointerLockElement) shell.close()
   else shell.open()
 })
