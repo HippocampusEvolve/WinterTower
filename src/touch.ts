@@ -105,6 +105,7 @@ export function createTouch(opts: TouchOptions) {
   const bTool1 = make('tbTool1', 'shovel')
   const bTool2 = make('tbTool2', 'build')
   let shownTool: ToolKind | undefined
+  let shownAction: boolean | undefined // что уже стоит в DOM у кнопки «рука»
 
   /** Нажатие кнопки: без прохода до канваса и без синтетики мыши. */
   function press(btn: HTMLButtonElement, fn: (down: boolean) => void) {
@@ -255,7 +256,12 @@ export function createTouch(opts: TouchOptions) {
      * текстовой подсказки, но без единого слова в кадре.
      */
     setButtons(action: boolean, tool: ToolKind) {
-      bAct.classList.toggle('hide', !action)
+      // Инструментные кнопки давно переставляются только на смене, а «рука»
+      // трогала DOM каждый кадр, чтобы остаться в том же положении.
+      if (action !== shownAction) {
+        shownAction = action
+        bAct.classList.toggle('hide', !action)
+      }
       if (tool === shownTool) return
       shownTool = tool
       bTool1.classList.toggle('hide', !tool)

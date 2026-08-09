@@ -77,13 +77,43 @@ export function inRound(r: Room, x: number, z: number, pad = 0): boolean {
 export class Interiors {
   readonly rooms: Room[] = []
 
+  // Общий габарит всех помещений. Снег зовёт `contains` на каждое хлопье
+  // каждый кадр - восемь тысяч раз, - а под крышей оказывается едва сотая
+  // их часть: одно сравнение с общей коробкой отсекает остальные, не заходя
+  // в перебор комнат.
+  private bx0 = Infinity
+  private bx1 = -Infinity
+  private by0 = Infinity
+  private by1 = -Infinity
+  private bz0 = Infinity
+  private bz1 = -Infinity
+
   add(r: Room): Room {
     this.rooms.push(r)
+    this.bx0 = Math.min(this.bx0, r.x0)
+    this.bx1 = Math.max(this.bx1, r.x1)
+    this.by0 = Math.min(this.by0, r.y0)
+    this.by1 = Math.max(this.by1, r.y1)
+    this.bz0 = Math.min(this.bz0, r.z0)
+    this.bz1 = Math.max(this.bz1, r.z1)
     return r
   }
 
   /** Точка внутри какого-нибудь помещения? `pad` сужает объём (отрицательный — расширяет). */
   contains(x: number, y: number, z: number, pad = 0): boolean {
+    // Запас в габарите — тот же, с каким комнаты проверяются ниже: `pad` умеет
+    // быть отрицательным (расширять), а высота берётся с полем 0.2.
+    const g = Math.min(pad, 0)
+    if (
+      x <= this.bx0 + g ||
+      x >= this.bx1 - g ||
+      z <= this.bz0 + g ||
+      z >= this.bz1 - g ||
+      y <= this.by0 - 0.2 ||
+      y >= this.by1 + 0.2
+    ) {
+      return false
+    }
     for (const r of this.rooms) {
       if (
         x > r.x0 + pad &&

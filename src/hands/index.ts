@@ -113,6 +113,7 @@ export function createHands(opts: {
   const _point = new THREE.Vector3() // точка попадания в рельеф, живёт до следующего удара
 
   const prompt = document.getElementById('prompt')
+  let promptText: string | null = null // что уже написано в DOM
 
   // --- Опора под точкой ------------------------------------------------------
 
@@ -395,6 +396,10 @@ export function createHands(opts: {
       if (t === shovel) text = 'F - взять лопату'
       else if (t === axe) text = 'F - взять топор'
     }
+    // DOM трогаем только на смене: раньше класс и текст переставлялись каждый
+    // кадр, чтобы остаться теми же самыми.
+    if (text === promptText) return
+    promptText = text
     prompt.classList.toggle('show', text !== null)
     if (text) prompt.textContent = text
   }
