@@ -131,6 +131,20 @@
       }
       body.paused #exit { opacity: 0.45; pointer-events: auto; }
       #exit:hover { opacity: 1; }
+      /* На таче pointer lock не используется, а значит нет и паузы, на которой
+         стрелка появляется сама: там она висит всегда и тусклее - иначе из мира
+         не выйти ничем, кроме кнопки «назад» браузера.
+         Контур обязателен, и слабого не хватает. На паузе стрелка лежит поверх
+         затемнения и читается сама; здесь она лежит прямо на небе, а небо в
+         этом мире светлое - светлый штрих по светлому небу пропадает целиком.
+         Тень плотная и в два слоя: ближний даёт кромку, дальний - отрыв от
+         фона. То же лечение, что у тач-кнопок, только сильнее: у них под собой
+         снег и вода, у стрелки - самая яркая часть кадра. */
+      body.touch-mode #exit { opacity: 0.8; pointer-events: auto; }
+      body.touch-mode #exit svg {
+        stroke: #f2f7ff;
+        filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.95)) drop-shadow(0 0 8px rgba(0, 0, 0, 0.6));
+      }
       #exit svg {
         width: 20px; height: 20px; fill: none; stroke: var(--ink);
         stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round;
@@ -150,6 +164,35 @@
         pointer-events: none; white-space: nowrap;
       }
       #prompt.show { opacity: 0.8; }
+
+      /* Тач-управление. Узлы создаются из touch.ts и только на тач-устройствах:
+         на десктопе ни кнопок, ни слушателей нет вовсе. Джойстиков не рисуем -
+         палец слева ведёт тело, справа поворачивает взгляд. Кнопки голые: белый
+         штрих без подложки, чтобы в кадре остался мир, а не интерфейс. */
+      #touchUI { position: fixed; inset: 0; z-index: 8; pointer-events: none; display: none; }
+      #touchUI.on { display: block; }
+      .tbtn {
+        position: fixed; width: 68px; height: 68px; padding: 0;
+        pointer-events: auto; background: transparent; border: none;
+        display: flex; align-items: center; justify-content: center;
+        opacity: 0.5; transition: opacity 0.2s ease;
+        -webkit-tap-highlight-color: transparent; touch-action: none;
+      }
+      .tbtn:active { opacity: 1; }
+      .tbtn.hide { display: none; }
+      .tbtn svg {
+        width: 34px; height: 34px; fill: none; stroke: #e8eefb;
+        stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round;
+        filter: drop-shadow(0 0 7px rgba(0, 0, 0, 0.75));
+      }
+      #tbJump { right: max(20px, env(safe-area-inset-right)); bottom: 32px; }
+      #tbAct { right: max(20px, env(safe-area-inset-right)); bottom: 116px; }
+      #tbTool1 { right: max(102px, calc(env(safe-area-inset-right) + 82px)); bottom: 32px; }
+      #tbTool2 { right: max(102px, calc(env(safe-area-inset-right) + 82px)); bottom: 116px; }
+      body.touch-mode, body.touch-mode canvas {
+        touch-action: none; user-select: none; -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
     </style>
   </head>
   <body>

@@ -11,9 +11,9 @@
  */
 
 import * as THREE from 'three'
-import { PALETTE } from '../atmosphere'
-import { HeldTool, ss, type Stroke } from './tool'
+import { HeldTool, type Stroke } from './tool'
 import { Burst } from './burst'
+import { gltf } from '../gltfload'
 
 // Покойный наклон. В Snowfall тут стояло 1.18, и при тамошнем мировом FOV 75°
 // лопата читалась; здесь кадр у́же, и от такого наклона штык распластывался
@@ -67,57 +67,59 @@ const STROKES: Record<ShovelStroke, Stroke> = {
   },
 }
 
+/**
+ * Модель собрана в Blender (blender-web-agent-kit) и запечена в один материал:
+ * base + ORM, 616 треугольников, один draw call. Конвенцию рига держит сама
+ * модель — остриё штыка в НАЧАЛЕ КООРДИНАТ, черенок вверх по +Y, совок открыт
+ * в -Z, высота те же 1.45 м, — поэтому кейфреймы, `PIVOT_Y` и `TIP` не тронуты.
+ * Прежняя процедурная сборка осталась в истории файла.
+ */
+const MODEL = 'models/shovel.glb'
+
+let proto: THREE.Group | null = null
+const waiting: THREE.Group[] = [] // группы, собранные до того, как модель доехала
+let loading: Promise<THREE.Group> | null = null
+
+/** Грузит модель один раз. Прогресс идёт в общую полосу загрузки. */
+export function loadShovelModel(): Promise<THREE.Group> {
+  if (!loading) {
+    loading = gltf()
+      .loadAsync(MODEL)
+      .then((res) => {
+        proto = res.scene
+        proto.traverse((o) => {
+          const m = o as THREE.Mesh
+          if (!m.isMesh) return
+          const mat = m.material as THREE.MeshStandardMaterial
+          // Атлас у станции свой: обмёрзшая сталь `PALETTE.metalFrost`, дерево
+          // серо-холодное, пластик почти графит. Подкрасить общий тёплый атлас
+          // множителем не выходит — чтобы сталь стала обмёрзшей, дерево уходит
+          // в оранжевый, — поэтому мир печётся отдельно (стадия s6 в наборе
+          // сборки), а цвет материала остаётся белым.
+          // Металличность и шероховатость лежат в ORM-карте, множители её
+          // домножают: roughness=1 оставляет запечённое как есть.
+          mat.metalness = 1
+          mat.roughness = 1
+          mat.envMapIntensity = 1.2
+        })
+        while (waiting.length) waiting.pop()!.add(proto!.clone(true))
+        return proto
+      })
+  }
+  return loading
+}
+
 /** Остриё штыка в НАЧАЛЕ КООРДИНАТ, черенок вверх по +Y — конвенция рига. */
 function buildShovel(): THREE.Group {
   const g = new THREE.Group()
-  // Обмёрзший инструментальный металл: тот же цвет, что у лестниц и перил
-  // станции. Чистой сталью его делать нельзя — в пасмурном тумане нечего
-  // отражать, и она читается чёрной дырой в кадре.
-  const metal = new THREE.MeshStandardMaterial({
-    color: PALETTE.metalFrost,
-    metalness: 0.45,
-    roughness: 0.52,
-    envMapIntensity: 1.2,
-  })
-  // Дерево серо-холодное: весь кадр уводится грейдингом в синеву, и тёплый
-  // черенок в руках выглядел бы вырезанным из другой картинки.
-  const wood = new THREE.MeshStandardMaterial({ color: 0x796752, roughness: 0.88, metalness: 0 })
-
-  // штык — выгнутый совок: плоскость с поперечным прогибом и сужением к острию
-  const bladeGeo = new THREE.PlaneGeometry(0.24, 0.32, 6, 5)
-  const pos = bladeGeo.attributes.position
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i)
-    const y = pos.getY(i) // -0.16 (остриё) .. 0.16 (плечи)
-    const u = x / 0.12 // -1..1 поперёк
-    const taper = 0.72 + 0.28 * ss((y + 0.16) / 0.32) // к острию у́же
-    pos.setX(i, x * taper)
-    pos.setZ(i, (1 - u * u) * 0.035) // прогиб совка
-  }
-  bladeGeo.computeVertexNormals()
-  const blade = new THREE.Mesh(bladeGeo, metal.clone())
-  ;(blade.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide
-  blade.position.y = 0.16
-  g.add(blade)
-
-  // тулейка (стакан крепления черенка)
-  const socket = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.026, 0.14, 8), metal)
-  socket.position.set(0, 0.38, 0.028)
-  g.add(socket)
-
-  // черенок
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.021, 0.98, 8), wood)
-  shaft.position.set(0, 0.93, 0.03)
-  g.add(shaft)
-
-  // ручка-перекладина
-  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.15, 8), wood)
-  grip.rotation.z = Math.PI / 2
-  grip.position.set(0, 1.43, 0.03)
-  g.add(grip)
-
+  // tool.ts зовёт build() синхронно и дважды (копия в мире и копия в руках),
+  // поэтому группа отдаётся сразу, а модель доедет в неё сама
+  if (proto) g.add(proto.clone(true))
+  else waiting.push(g)
   return g
 }
+
+loadShovelModel()
 
 export class Shovel extends HeldTool<ShovelStroke> {
   private bursts: Burst

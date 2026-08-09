@@ -73,6 +73,13 @@ export function createPlayer(
   const velocity = new THREE.Vector3()
   const keys = new Set<string>()
 
+  /**
+   * Оси с тача (`touch.ts`): `f` и `r` - аналоговые −1..1, подмешиваются к
+   * клавишам. Аналоговость тут не украшение: на телефоне это единственный
+   * способ пройти шагом, а не только бегом или стоя.
+   */
+  const touch = { f: 0, r: 0, run: false, jump: false }
+
   let onFloor = false
   let onDeck = false // опора этого кадра — постройка, а не рельеф
   let surface: Surface = 'snow'
@@ -129,20 +136,39 @@ export function createPlayer(
     // вертикали (это и есть cross(fwd, (0,1,0))), а не от вектора камеры.
     side3.set(-fwd.z, 0, fwd.x)
 
+    // Клавиши и палец складываются в одни и те же две оси: клавиша даёт ровно
+    // ±1, палец - сколько увёл. Складываются, а не выбираются: на планшете с
+    // клавиатурой оба способа работают одновременно и не спорят.
+    const axF = THREE.MathUtils.clamp(
+      (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) -
+        (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) +
+        touch.f,
+      -1,
+      1,
+    )
+    const axR = THREE.MathUtils.clamp(
+      (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) -
+        (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0) +
+        touch.r,
+      -1,
+      1,
+    )
+
     wish.set(0, 0, 0)
-    if (keys.has('KeyW') || keys.has('ArrowUp')) wish.add(fwd)
-    if (keys.has('KeyS') || keys.has('ArrowDown')) wish.sub(fwd)
-    if (keys.has('KeyD') || keys.has('ArrowRight')) wish.add(side3)
-    if (keys.has('KeyA') || keys.has('ArrowLeft')) wish.sub(side3)
+    wish.addScaledVector(fwd, axF).addScaledVector(side3, axR)
+    // Длина вектора - это ДОЛЯ полного хода, и она уезжает в потолок скорости,
+    // а не в ускорение: лёгкий увод пальца должен давать медленный шаг, а не
+    // медленный разгон до той же скорости.
+    const mag = Math.min(1, wish.length())
 
-    const wantRun = keys.has('ShiftLeft') || keys.has('ShiftRight')
+    const wantRun = keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.run
     // Бежать можно только вперёд и только пока есть дыхание.
-    running = wantRun && !exhausted && stamina > 0.02 && wish.dot(fwd) > 0.1
+    running = wantRun && !exhausted && stamina > 0.02 && axF > 0.1
 
-    if (wish.lengthSq() > 0) {
+    if (mag > 1e-3) {
       wish.normalize()
       const accel = (onFloor ? ACCEL_GROUND : ACCEL_AIR) * dt
-      const cap = running ? SPEED_RUN : SPEED_WALK
+      const cap = (running ? SPEED_RUN : SPEED_WALK) * mag
       velocity.addScaledVector(wish, accel)
 
       // ограничиваем только горизонтальную составляющую, чтобы не резать падение
@@ -155,7 +181,7 @@ export function createPlayer(
       }
     }
 
-    const wantJump = keys.has('Space')
+    const wantJump = keys.has('Space') || touch.jump
     if (onFloor && wantJump && !jumpHeld && !exhausted) {
       velocity.y = JUMP
       onFloor = false
@@ -352,6 +378,8 @@ export function createPlayer(
     teleport,
     collider,
     velocity,
+    /** Оси с тача: сюда пишет `touch.ts`, читает `readInput`. */
+    touch,
     /** Позиция глаза. Совпадает с камерой без учёта качки. */
     get position() {
       return collider.end

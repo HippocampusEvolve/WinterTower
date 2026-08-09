@@ -170,7 +170,9 @@ export function createHands(opts: {
   let chopHeld = false
   let hintT = 0 // сек показа подсказки после взятия инструмента
 
-  const locked = () => document.pointerLockElement !== null
+  // «Мы в мире» решает слой взгляда: на таче pointer lock не используется
+  // вовсе, и проверка `document.pointerLockElement` там всегда врёт.
+  const locked = () => look.locked
 
   dom.addEventListener('mousedown', (e) => {
     if (!locked()) return
@@ -318,7 +320,9 @@ export function createHands(opts: {
   function updatePrompt() {
     if (!prompt) return
     let text: string | null = null
-    if (!locked()) text = null
+    // Пальцем клавиш нет вовсе: там подсказку даёт сама кнопка, которая
+    // появилась. Писать «ЛКМ - копать» на телефоне значит врать игроку.
+    if (!locked() || look.isTouch) text = null
     else if (shovel.held) text = hintT > 0 ? 'ЛКМ - копать · ПКМ - намыть · F - воткнуть' : null
     else if (axe.held) text = hintT > 0 ? 'ЛКМ - рубить · F - воткнуть' : null
     else {
@@ -363,6 +367,36 @@ export function createHands(opts: {
     shovel,
     axe,
     sfx,
+
+    /**
+     * Контекстное действие - то же самое, что делает F. Наружу вынесено ради
+     * тача: кнопка «рука» обязана делать РОВНО то же, что клавиша, а не свою
+     * похожую версию, иначе схемы управления разъедутся на первой же правке.
+     */
+    action: () => handAction(camera.position),
+
+    /**
+     * Держать кнопку инструмента = держать кнопку мыши: замахи идут цепочкой.
+     * Слот 1 - работа по месту (копать лопатой, рубить топором), слот 2 -
+     * второе действие лопаты.
+     */
+    hold(slot: 1 | 2, down: boolean) {
+      if (slot === 1) {
+        digHeld = shovel.held && down
+        chopHeld = axe.held && down
+      } else {
+        buildHeld = shovel.held && down
+      }
+    },
+
+    /** Какие тач-кнопки показывать в этом кадре. */
+    buttons(): { action: boolean; tool: 'shovel' | 'axe' | null } {
+      return {
+        action: shovel.held || axe.held || handTarget() !== null,
+        tool: shovel.held ? 'shovel' : axe.held ? 'axe' : null,
+      }
+    },
+
     /** Для отладки из консоли: во что смотрим и чем это считается. */
     probe: strike,
   }

@@ -49,56 +49,96 @@ const STROKES: Record<AxeStroke, Stroke> = {
 }
 
 /**
- * КРОМКА ЛЕЗВИЯ в начале координат, топорище вверх по +Y — та же конвенция,
- * что у лопаты (рабочая точка = origin), потому воткнутый топор стоит на
- * голове, рукоятью вверх, как и положено в колоде.
+ * Гранёный топорик: профили головы и размеры взяты из модели, собранной по
+ * картинке-эталону (img2threejs). В модели начало координат — центр всада,
+ * кромка смотрит в -X, топорище вниз; конвенция игры обратная — КРОМКА ЛЕЗВИЯ
+ * в начале координат, топорище вверх по +Y, та же, что у лопаты (рабочая точка
+ * = origin), потому воткнутый топор стоит на голове, рукоятью вверх.
  */
+const EDGE_X = 0.1353 // самая выступающая точка кромки — её сдвигаем в ноль
+const EYE_Y = 0.156 // всад модели → верх головы, дальше топорище вверх
+
+/**
+ * Профиль головы из модели → плоскость игры: горизонталь считаем от кромки,
+ * вертикаль переворачиваем (в модели голова сверху, у нас — снизу).
+ */
+function headShape(points: [number, number][]): THREE.Shape {
+  const s = new THREE.Shape()
+  points.forEach(([x, y], i) => {
+    const px = x + EDGE_X
+    const py = EYE_Y - y
+    if (i === 0) s.moveTo(px, py)
+    else s.lineTo(px, py)
+  })
+  s.closePath()
+  return s
+}
+
+/**
+ * Деталь головы: плоский профиль, выдавленный в толщину. Фасок нет — грани
+ * должны читаться гранями, потому же flatShading у материалов.
+ */
+function headPart(points: [number, number][], depth: number, material: THREE.Material): THREE.Mesh {
+  const geo = new THREE.ExtrudeGeometry(headShape(points), { depth, bevelEnabled: false, steps: 1 })
+  geo.translate(0, 0, -depth / 2) // толщина симметрично
+  geo.rotateY(-Math.PI / 2) // профиль x → мировой z: кромка на z=0, обух сзади
+  return new THREE.Mesh(geo, material)
+}
+
 function buildAxe(): THREE.Group {
   const g = new THREE.Group()
+  // Сталь лезвия уведена в морозный тон станции; metalness 0 — модель гранёная,
+  // блеск ей даёт не отражение, а разный наклон граней к свету.
   const steel = new THREE.MeshStandardMaterial({
     color: PALETTE.metalFrost,
-    metalness: 0.5,
-    roughness: 0.44,
+    metalness: 0,
+    roughness: 0.45,
     envMapIntensity: 1.3,
+    flatShading: true,
   })
+  // Крашеная щека — единственное тёплое пятно в кадре, и это к лучшему: топор
+  // в синем интерьере станции нужно находить взглядом сразу.
+  const paint = new THREE.MeshStandardMaterial({ color: 0x8e3a33, roughness: 0.75, metalness: 0, flatShading: true })
   // Топорище холоднее и темнее натурального дерева: кадр станции уводится
   // грейдингом в синеву, и тёплая рукоять читалась бы жёлтой заплатой.
-  const wood = new THREE.MeshStandardMaterial({ color: 0x7a654c, roughness: 0.82, metalness: 0 })
+  const wood = new THREE.MeshStandardMaterial({ color: 0x7a654c, roughness: 0.85, metalness: 0, flatShading: true })
 
-  // Голова: профиль (вперёд — кромка с бородой, назад — обух) выдавлен в толщину.
-  // Борода со стороны РУКОЯТИ (в модели рукоять уходит вверх, значит борода —
-  // верхний зуб кромки): в руках, головой вверх, она свисает к кистям.
-  const s = new THREE.Shape()
-  s.moveTo(0, 0.155) // верх кромки — борода чуть свисает к топорищу
-  s.lineTo(0, -0.035) // кромка — почти вертикальная линия
-  s.quadraticCurveTo(0.07, -0.025, 0.12, 0.0) // нижняя щека к всаду
-  s.lineTo(0.175, 0.005) // обух
-  s.lineTo(0.175, 0.075)
-  s.quadraticCurveTo(0.08, 0.09, 0.045, 0.125) // верхняя щека, подрез к бороде
-  s.closePath()
+  // Щека — крашеное тело головы, самая толстая деталь (42 мм).
+  g.add(headPart([
+    [-0.1082, 0.1727], [-0.0593, 0.1443], [0.0322, 0.1289], [0.0296, 0.1211],
+    [0.0283, 0.0902], [0.0258, 0.0773], [0.0245, 0.0412], [-0.0219, 0.0412],
+    [-0.0219, 0.0541], [-0.0477, 0.0515], [-0.0657, 0.0412], [-0.0838, 0.0283],
+    [-0.0966, 0.0155], [-0.1044, 0.0103], [-0.1044, 0.0258],
+  ], 0.042, paint))
 
-  const headGeo = new THREE.ExtrudeGeometry(s, {
-    depth: 0.03,
-    bevelEnabled: true,
-    bevelThickness: 0.006,
-    bevelSize: 0.007,
-    bevelSegments: 2,
-  })
-  headGeo.translate(0, 0, -0.015) // толщина симметрично
-  headGeo.rotateY(-Math.PI / 2) // профиль x → мировой z: кромка на z=0, обух сзади
-  g.add(new THREE.Mesh(headGeo, steel))
+  // Лезвие — светлая стальная полоса по всей кромке, тоньше щеки (24 мм) и
+  // заходит на неё на 4 мм: боковины не совпадают, мерцать нечему.
+  g.add(headPart([
+    [-0.1185, 0.1907], [-0.1353, 0.1263], [-0.1301, 0.0644], [-0.1185, 0.0258],
+    [-0.1121, 0.0039], [-0.1069, 0.0039], [-0.0979, 0.0206], [-0.1031, 0.0515],
+    [-0.1031, 0.1263], [-0.1057, 0.1752],
+  ], 0.024, steel))
 
-  // топорище: сквозь всад вверх, лёгкий наклон вперёд к голове
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.023, 0.78, 8), wood)
-  shaft.position.set(0, 0.45, 0.152)
-  shaft.rotation.x = 0.06
+  // Шпора на обухе — крючок, отделённый от щеки вырезом; тоньше её (34 мм),
+  // корнем сидит в теле на 3 мм.
+  g.add(headPart([
+    [0.0296, 0.1263], [0.0644, 0.0979], [0.0283, 0.0876], [0.0245, 0.1108],
+  ], 0.034, paint))
+
+  // Топорище: четырёхгранная призма, как в модели (radialSegments 4 — грани, а
+  // не гладкий черенок), сквозь всад вверх. Длина добрана до прежней: риг рук
+  // (REST, PIVOT_Y, TIP) считает топорище от кромки до хвоста.
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.0212, 0.0184, 0.734, 4, 1), wood)
+  shaft.position.set(0, 0.473, EDGE_X)
+  shaft.rotation.y = Math.PI / 4
   g.add(shaft)
 
-  // хвост рукояти — утолщение, чтобы кисть не соскальзывала
-  const knob = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.021, 0.07, 8), wood)
-  knob.position.set(0, 0.85, 0.128)
-  knob.rotation.x = 0.06
-  g.add(knob)
+  // Хвост рукояти — раструб, чтобы кисть не соскальзывала; надет на конец
+  // топорища с нахлёстом.
+  const butt = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.0212, 0.03, 4, 1), wood)
+  butt.position.set(0, 0.851, EDGE_X)
+  butt.rotation.y = Math.PI / 4
+  g.add(butt)
 
   return g
 }

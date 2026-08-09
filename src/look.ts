@@ -54,6 +54,12 @@ export function createLook(camera: THREE.PerspectiveCamera, dom: HTMLElement) {
   let tYaw = 0
   let tPitch = 0
 
+  // На таче pointer lock не используется вовсе: там нет курсора, который надо
+  // было бы забирать. Поэтому «мы в мире» - это не только захваченный курсор,
+  // но и включённый тач-режим, и решает это ОДНО место, а не пять проверок
+  // `document.pointerLockElement` по разным файлам.
+  let touchMode = false
+
   let roll = 0
   const kick: Spring = { x: 0, v: 0 } // клевок приземления, рад
   let accSm = 0 // сглаженное продольное ускорение тела
@@ -66,6 +72,18 @@ export function createLook(camera: THREE.PerspectiveCamera, dom: HTMLElement) {
     tYaw -= e.movementX * SENS
     tPitch = clamp(tPitch - e.movementY * SENS, -PI_2 + 0.02, PI_2 - 0.02)
   })
+
+  /**
+   * Повернуть взгляд ЦЕЛЬЮ, а не камерой.
+   *
+   * Через это входит всё, что не мышь: палец на правой половине экрана
+   * (`touch.ts`), а дальше сюда же встанет геймпад. Сглаживание и крены при
+   * этом общие с мышью - разного взгляда для разных устройств быть не должно.
+   */
+  function rotateBy(dYaw: number, dPitch = 0) {
+    tYaw += dYaw
+    tPitch = clamp(tPitch + dPitch, -PI_2 + 0.02, PI_2 - 0.02)
+  }
 
   /** Поставить взгляд без доезда: спавн и телепорт не должны «доворачиваться». */
   function setYaw(y: number, p = 0) {
@@ -131,10 +149,19 @@ export function createLook(camera: THREE.PerspectiveCamera, dom: HTMLElement) {
     update,
     land,
     setYaw,
+    rotateBy,
     cfg,
     lock: () => dom.requestPointerLock(),
+    /** Включить тач-режим: курсора нет, «в мире» решается этим флагом. */
+    setTouchMode: (v: boolean) => {
+      touchMode = v
+    },
+    /** Играем пальцем. По нему из кадра убираются подсказки с именами клавиш. */
+    get isTouch() {
+      return touchMode
+    },
     get locked() {
-      return document.pointerLockElement !== null
+      return touchMode || document.pointerLockElement !== null
     },
     get yaw() {
       return yaw

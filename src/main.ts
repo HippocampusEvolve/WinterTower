@@ -4,6 +4,12 @@
  * взгляд — в look.ts, всё, что в руках, — в hands/.
  */
 
+// Штамп версии ставится раньше всего остального по той же причине, по которой
+// заставка идёт следом: карты запрашиваются уже при разборе
+// `world/materials.ts`, и перехватчик адресов должен стоять до этого. Импорт
+// ради побочного эффекта, значений отсюда никто не берёт.
+import './asset'
+
 // Заставка загрузки идёт первой строкой не для красоты: она подписывается на
 // счётчик лоадеров, а карты запрашиваются уже при разборе `world/materials.ts`.
 import { whenLoaded, probe } from './loading'
@@ -16,6 +22,7 @@ import { createAtmosphere } from './atmosphere'
 import { createLook } from './look'
 import { createPlayer } from './player'
 import { createHands, type Hands } from './hands'
+import { createTouch, touchSupported, type Touch } from './touch'
 import { createWind } from './wind'
 import { createSnow } from './snow'
 import { createHaze } from './haze'
@@ -102,6 +109,19 @@ hands = createHands({
   spawnYaw: world.yaw,
 })
 
+// --- Управление пальцем -------------------------------------------------------
+// Создаётся только на тач-устройствах: на десктопе ни кнопок, ни слушателей.
+// Слой узкий - он пишет оси в тело и крутит взгляд, а что делает «рука» и что
+// делают кнопки инструмента, решается здесь.
+const touch: Touch | null = touchSupported()
+  ? createTouch({
+      player,
+      look,
+      onAction: () => hands?.action(),
+      onTool: (slot, down) => hands?.hold(slot, down),
+    })
+  : null
+
 /**
  * Кадр в файл. Горячей клавиши нет (игроку она не нужна), зовётся из консоли:
  * `wt.shot()`. Рисовать надо тут же, своей рукой: буфер не сохраняется между
@@ -136,6 +156,7 @@ Object.assign(window, {
     atmosphere,
     octree,
     renderer,
+    touch,
     heightAt,
     world,
     wind,
@@ -151,10 +172,19 @@ Object.assign(window, {
 // Esc браузер обрабатывает сам: он отпускает курсор, а по этому событию
 // возвращается экран паузы.
 const shell = createShell(() => {
-  renderer.domElement.requestPointerLock()
   ambient.start() // до жеста пользователя браузер звук не заводит
+  // На таче pointer lock не запрашиваем: курсора там нет, а запрос на
+  // некоторых мобильных браузерах ещё и роняет полноэкранный режим. Значит и
+  // экран паузы закрывать некому - закрываем сами.
+  if (touch) {
+    touch.activate()
+    shell.close()
+  } else {
+    renderer.domElement.requestPointerLock()
+  }
 })
 document.addEventListener('pointerlockchange', () => {
+  if (touch) return // тач-режим паузой курсора не управляется
   if (document.pointerLockElement) shell.close()
   else shell.open()
 })
@@ -220,6 +250,12 @@ renderer.setAnimationLoop(() => {
   look.update(dt, player)
   player.update(dt)
   hands?.update(dt, player)
+  // Кнопка «рука» появляется, только когда ею есть что сделать, а кнопки
+  // инструмента - когда он в руках. Подсказка вещью, а не текстом.
+  if (touch?.active && hands) {
+    const b = hands.buttons()
+    touch.setButtons(b.action, b.tool)
+  }
   wind.update(dt)
   snow.update(dt)
   haze.update(dt)

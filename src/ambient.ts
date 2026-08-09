@@ -14,24 +14,37 @@
  */
 
 import { SETTINGS } from './atmosphere'
+import { impulseResponse, SEND } from './reverb'
 import type { Wind } from './wind'
 
 export type Ambient = ReturnType<typeof createAmbient>
 
-/** Секунда розоватого шума. Белый звенит слишком «песочно» для ветра. */
+/**
+ * Секунда розоватого шума. Белый звенит слишком «песочно» для ветра.
+ *
+ * В конце из буфера вычитается среднее. Фильтры, дающие розовый наклон, тянут
+ * за собой постоянную составляющую - смещение всей волны от нуля. Слышно её
+ * дважды: щелчком в момент запуска и остановки петли, и потерей запаса по
+ * громкости (смещённая волна упирается в единицу раньше, чем успевает стать
+ * громкой). На глаз она невидима, счётом ловится сразу.
+ */
 function noiseBuffer(ctx: AudioContext, seconds = 4): AudioBuffer {
   const buf = ctx.createBuffer(1, ctx.sampleRate * seconds, ctx.sampleRate)
   const d = buf.getChannelData(0)
   let b0 = 0
   let b1 = 0
   let b2 = 0
+  let sum = 0
   for (let i = 0; i < d.length; i++) {
     const w = Math.random() * 2 - 1
     b0 = 0.997 * b0 + w * 0.0555
     b1 = 0.963 * b1 + w * 0.075
     b2 = 0.57 * b2 + w * 0.153
     d[i] = (b0 + b1 + b2 + w * 0.1848) * 0.6
+    sum += d[i]
   }
+  const mean = sum / d.length
+  for (let i = 0; i < d.length; i++) d[i] -= mean
   return buf
 }
 
@@ -46,6 +59,12 @@ export function createAmbient(wind: Wind) {
   // Шина разовых звуков: шаги, удары инструмента. Ветер идёт мимо неё, поэтому
   // приглушение «за стеной» на удары не распространяется — оно про поток воздуха.
   let sfx: GainNode
+  // Посыл в пространство: сколько от удара уходит на отражения. Схема
+  // параллельная — сухой звук идёт прямо и остаётся нетронутым, а копия уходит
+  // в свёртку. Так хвост можно менять, ничего не делая с самим ударом.
+  let send: GainNode
+  let indoorSpace: GainNode
+  let outdoorSpace: GainNode
   let muted = false
 
   /** Запускается по первому жесту пользователя. Повторные вызовы безвредны. */
@@ -67,11 +86,40 @@ export function createAmbient(wind: Wind) {
 
     master = ctx.createGain()
     master.gain.value = 0
-    master.connect(ctx.destination)
+    // Заслон от постоянной составляющей. Вычесть среднее из буфера мало:
+    // фильтры, дающие розовый наклон, вносят своё смещение уже после, а
+    // лоупасс пропускает его насквозь. Хайпасс на 18 Гц ниже всего слышимого,
+    // поэтому на звук не влияет вовсе, но возвращает волну на ноль - а с ней и
+    // запас по громкости, который смещение съедало.
+    const dcBlock = ctx.createBiquadFilter()
+    dcBlock.type = 'highpass'
+    dcBlock.frequency.value = 18
+    dcBlock.Q.value = 0.7
+    master.connect(dcBlock).connect(ctx.destination)
 
     sfx = ctx.createGain()
     sfx.gain.value = 1
     sfx.connect(ctx.destination)
+
+    // Пространство. Двух сверток хватает на весь мир: открытый склон и бетонная
+    // коробка. Переход между ними — перекрёстное затухание в `update`, поэтому
+    // в дверях место меняется плавно, а не переключается щелчком.
+    send = ctx.createGain()
+    send.gain.value = 1
+    sfx.connect(send)
+
+    const space = (kind: 'outdoor' | 'indoor', level: number) => {
+      const conv = ctx!.createConvolver()
+      conv.normalize = true
+      conv.buffer = impulseResponse(ctx!, kind)
+      const g = ctx!.createGain()
+      g.gain.value = level
+      send.connect(conv).connect(g).connect(ctx!.destination)
+      return g
+    }
+    // Игрок начинает снаружи, поэтому вторая свёртка входит с нуля.
+    outdoorSpace = space('outdoor', SEND.outdoor)
+    indoorSpace = space('indoor', 0)
 
     // Гул
     const low = ctx.createBiquadFilter()
@@ -125,6 +173,12 @@ export function createAmbient(wind: Wind) {
     // Свист живёт только на верхушке порыва: степень 3 срезает середину.
     whistleGain.gain.setTargetAtTime(Math.pow(g, 3) * 0.28 * (1 - inside * 0.85), t, 0.5)
     whistleFilter.frequency.setTargetAtTime(950 + g * 500, t, 0.6)
+
+    // Место, в котором звучат шаги. Внутри стены близко: отражений больше и они
+    // громче. Переход плавный по той же причине, что и у ветра, — иначе в
+    // дверном проёме хвост шага щёлкает при каждом переступе.
+    outdoorSpace.gain.setTargetAtTime(SEND.outdoor * (1 - inside), t, 0.35)
+    indoorSpace.gain.setTargetAtTime(SEND.indoor * inside, t, 0.35)
   }
 
   /** Заглушить/вернуть звук. Горячей клавиши нет: из консоли — `wt.ambient.toggle()`. */
