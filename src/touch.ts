@@ -146,7 +146,12 @@ export function createTouch(opts: TouchOptions) {
    */
   function skip(e: TouchEvent): boolean {
     if (!active) return true
-    if (document.body.classList.contains('paused')) return true
+    if (document.body.classList.contains('paused')) {
+      // Пауза застала палец на экране: снятие сюда уже не дойдёт, а оси так и
+      // остались бы ненулевыми - после снятия паузы тело пошло бы само.
+      if (moveId !== null || lookId !== null) release()
+      return true
+    }
     const t = e.target as Element | null
     return !!(t && t.closest && t.closest('button, a, #gate'))
   }
@@ -209,11 +214,25 @@ export function createTouch(opts: TouchOptions) {
     }
   }
 
+  /**
+   * Отпустить всё: пальцы забыты, оси в ноль. Нужно там, где `onEnd` до нас не
+   * дойдёт: игра встала на паузу с зажатым пальцем (`skip` отсечёт и снятие
+   * тоже), системный жест увёл палец за пределы страницы. Иначе тело идёт само.
+   */
+  function release() {
+    moveId = lookId = null
+    const p = player.touch
+    p.f = p.r = 0
+    p.run = false
+    p.jump = false
+  }
+
   const listen = { passive: false } as const
   addEventListener('touchstart', onStart, listen)
   addEventListener('touchmove', onMove, listen)
   addEventListener('touchend', onEnd, listen)
   addEventListener('touchcancel', onEnd, listen)
+  addEventListener('blur', release)
 
   return {
     get active() {

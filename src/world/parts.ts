@@ -296,6 +296,11 @@ function addSmoothNormals(geo: THREE.BufferGeometry): void {
   const n = pos.count
   const sum = new Map<number, [number, number, number]>()
   const keys = new Float64Array(n)
+  // Квантование в сантиметры со сдвигом: ключ трёх координат укладывается в
+  // разряды по 16384. ГРАНИЦА - ±163.84 м от начала мира: дальше разряды
+  // переполнятся, ключи начнут совпадать у разных вершин, и сглаженные нормали
+  // поедут пятнами. Вся статика станции лежит в пределах ±80 м, запас двойной,
+  // но дальний реквизит проверять по этой мерке.
   const q = (v: number) => Math.round(v * 50) + 8192
   for (let i = 0; i < n; i++) {
     const k = (q(pos.getX(i)) * 16384 + q(pos.getY(i))) * 16384 + q(pos.getZ(i))
