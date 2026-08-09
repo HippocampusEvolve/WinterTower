@@ -66,14 +66,36 @@ export function createAmbient(wind: Wind) {
   let indoorSpace: GainNode
   let outdoorSpace: GainNode
   let muted = false
+  // Когда в последний раз писали плавные значения в аудиопоток и при каких
+  // условиях: чаще чем нужно их обновлять незачем (см. update).
+  let lastAt = -1
+  let lastGust = -1
+  let lastInside = -1
 
   /** Запускается по первому жесту пользователя. Повторные вызовы безвредны. */
   function start() {
     if (ctx) {
-      if (ctx.state === 'suspended') void ctx.resume()
+      // `interrupted` - состояние Safari после звонка или Siri: лечится тем же
+      // resume, но под `=== 'suspended'` не попадало и оставляло мир немым.
+      if (ctx.state !== 'running') void ctx.resume()
       return
     }
     ctx = new AudioContext()
+    // Ушли со вкладки - замолкаем. Кадры останавливает браузер сам, а звук
+    // живёт своей жизнью: ветер закольцован и продолжал бы выть в наушниках
+    // соседней вкладки. Возврат заодно поднимает контекст, заглохший не по
+    // нашей воле - на таче гейт после входа не появляется, и другого случая
+    // позвать resume попросту нет.
+    //
+    // Проверка на DOM не лишняя: этот же модуль считается на Node в проверке
+    // звука (`tools/sound-check-kit`), где вкладок нет вовсе.
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (!ctx) return
+        if (document.hidden) void ctx.suspend()
+        else if (ctx.state !== 'running') void ctx.resume()
+      })
+    }
     const buf = noiseBuffer(ctx)
 
     const src = () => {
@@ -165,6 +187,16 @@ export function createAmbient(wind: Wind) {
     const t = ctx.currentTime
     const g = wind.gust
     const inside = indoors ? 1 : 0
+
+    // Семь автоматизаций каждый кадр - это больше четырёхсот событий в секунду
+    // в очередь аудиопотока, и все ради значений, которые сами едут плавно
+    // (постоянная времени от 0.3 до 0.6 с). Пишем на порядок реже, но сразу,
+    // если порыв заметно сменился или игрок переступил порог: щелчков это не
+    // добавляет - плавность делает сам setTargetAtTime, а не частота вызовов.
+    if (t - lastAt < 0.1 && Math.abs(g - lastGust) < 0.02 && inside === lastInside) return
+    lastAt = t
+    lastGust = g
+    lastInside = inside
 
     // setTargetAtTime, а не присваивание: ступеньки параметра дают щелчки.
     master.gain.setTargetAtTime(muted ? 0 : SETTINGS.ambient * (1 - inside * 0.55), t, 0.3)

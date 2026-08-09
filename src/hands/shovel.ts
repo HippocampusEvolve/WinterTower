@@ -109,6 +109,15 @@ export function loadShovelModel(): Promise<THREE.Group> {
   return loading
 }
 
+/**
+ * Модель не доехала: сеть оборвалась, кэш побился. Молчать нельзя - группа
+ * инструмента осталась бы в мире пустой, и лопату можно было бы взять и махать
+ * ею: звук, отдача, брызги, всё как надо, но в руках ничего.
+ */
+export function onShovelModelFail(fn: (e: unknown) => void): void {
+  loadShovelModel().catch(fn)
+}
+
 /** Остриё штыка в НАЧАЛЕ КООРДИНАТ, черенок вверх по +Y — конвенция рига. */
 function buildShovel(): THREE.Group {
   const g = new THREE.Group()
@@ -139,6 +148,13 @@ export class Shovel extends HeldTool<ShovelStroke> {
       },
     })
     this.bursts = new Burst(scene) // снежная крошка из-под штыка
+    // Без модели лопаты в мире нет вовсе: уводим её туда, где до неё не
+    // дотянуться (радиус подбора - метры), и гасим пустую группу.
+    onShovelModelFail((e) => {
+      console.warn('модель лопаты не загрузилась, лопаты в мире не будет:', e)
+      this.world.visible = false
+      this.pos.set(0, -1000, 0)
+    })
   }
 
   spray(point: THREE.Vector3, dir: THREE.Vector3) {

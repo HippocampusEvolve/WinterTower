@@ -67,5 +67,25 @@ export function assetStamps(dir = 'public') {
 // то есть считаются от адреса страницы и переезжают вместе с ней сами.
 export default defineConfig(({ command, isPreview }) => ({
   base: command === 'build' || isPreview ? '/wintertower/' : '/',
+  build: {
+    rollupOptions: {
+      output: {
+        // Движок отдельным файлом от кода мира. Раньше они лежали вместе, и
+        // правка одной строки в игре меняла имя всего бандла: вернувшийся
+        // игрок перекачивал девятьсот килобайт three и postprocessing,
+        // которые не менялись месяцами.
+        //
+        // Функцией, а не таблицей: сборка идёт на rolldown, там таблица не
+        // принимается вовсе (`manualChunks is not a function`).
+        manualChunks(id) {
+          const p = id.replace(/\\/g, '/');
+          return p.includes('/node_modules/three/') ||
+            p.includes('/node_modules/postprocessing/')
+            ? 'three'
+            : undefined;
+        },
+      },
+    },
+  },
   plugins: [assetStamps()],
 }));

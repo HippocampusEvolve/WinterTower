@@ -18,10 +18,13 @@ export interface Shell {
   close(): void
 }
 
-export function createShell(onEnter: () => void): Shell {
+export function createShell(onEnter: (ev: MouseEvent) => void): Shell {
   const gate = document.getElementById('gate')!
   const button = document.getElementById('enter') as HTMLButtonElement
 
+  // Событие клика уходит наружу целиком: по нему мир узнаёт, чем именно вошли
+  // — пальцем или мышью. Наличие тачскрина об этом не говорит ничего: у
+  // ноутбука с сенсорным экраном есть и то, и другое.
   button.addEventListener('click', onEnter)
 
   return {

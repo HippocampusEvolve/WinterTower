@@ -21,8 +21,8 @@ import { createShell } from './shell'
 import { createAtmosphere } from './atmosphere'
 import { createLook } from './look'
 import { createPlayer } from './player'
-import { createHands, type Hands } from './hands'
-import { createTouch, touchSupported, type Touch } from './touch'
+import { createHands, type Hands, type TouchButtons } from './hands'
+import { createTouch, touchForced, touchSupported, type Touch } from './touch'
 import { createWind } from './wind'
 import { createSnow } from './snow'
 import { createHaze } from './haze'
@@ -100,7 +100,6 @@ hands = createHands({
   camera,
   dom: renderer.domElement,
   look,
-  terrain: world.terrain,
   solid: world.solid,
   sun: atmosphere.sun,
   heightAt,
@@ -171,20 +170,36 @@ Object.assign(window, {
 // Вход, пауза и выход на витрину — общий для всех миров экран (shell.ts).
 // Esc браузер обрабатывает сам: он отпускает курсор, а по этому событию
 // возвращается экран паузы.
-const shell = createShell(() => {
+const shell = createShell((ev) => {
   ambient.start() // до жеста пользователя браузер звук не заводит
+  // Чем вошли, тем и играем. Раньше выбор шёл по факту «тач вообще возможен»,
+  // а `'ontouchstart' in window` истинно на любом ноутбуке с сенсорным
+  // экраном: мир уходил в тач-режим, pointer lock не запрашивался никогда, и
+  // мышь не могла повернуть взгляд вовсе - как и Esc открыть паузу.
+  // Спрашиваем само нажатие: палец это был или мышь. Синтетический клик
+  // (Enter с клавиатуры) типа указателя не несёт - тогда решает устройство.
+  const byFinger =
+    touchForced() ||
+    (ev && (ev as PointerEvent).pointerType
+      ? (ev as PointerEvent).pointerType !== 'mouse'
+      : matchMedia('(pointer: coarse)').matches)
   // На таче pointer lock не запрашиваем: курсора там нет, а запрос на
   // некоторых мобильных браузерах ещё и роняет полноэкранный режим. Значит и
   // экран паузы закрывать некому - закрываем сами.
-  if (touch) {
+  if (touch && byFinger) {
     touch.activate()
     shell.close()
   } else {
-    renderer.domElement.requestPointerLock()
+    // Отказ не роняем: браузер держит защитную паузу около секунды после
+    // выхода по Esc. Экран входа остаётся открытым и ждёт второго нажатия.
+    renderer.domElement.requestPointerLock()?.catch?.(() => {})
   }
 })
 document.addEventListener('pointerlockchange', () => {
-  if (touch) return // тач-режим паузой курсора не управляется
+  // Смотрим на фактическую активацию, а не на существование слоя: тач создан
+  // и на ноутбуке с сенсорным экраном, но играют там мышью, и пауза по Esc
+  // обязана работать.
+  if (touch?.active) return // тач-режим паузой курсора не управляется
   if (document.pointerLockElement) shell.close()
   else shell.open()
 })
@@ -240,6 +255,14 @@ addEventListener('resize', () => {
 // В three r185 Timer живёт в ядре, а не в examples/jsm. Clock объявлен устаревшим.
 const timer = new THREE.Timer()
 
+// Отрисовка мира одной ссылкой: замыкание внутри кадра создавало бы новую
+// функцию шестьдесят раз в секунду впустую.
+const drawWorld = () => atmosphere.composer.render()
+
+// Состояние тач-кнопок живёт одним объектом на всю игру: руки пишут в него,
+// тач читает (см. hands.buttons).
+const buttonState: TouchButtons = { action: false, tool: null }
+
 renderer.setAnimationLoop(() => {
   timer.update()
 
@@ -253,8 +276,8 @@ renderer.setAnimationLoop(() => {
   // Кнопка «рука» появляется, только когда ею есть что сделать, а кнопки
   // инструмента - когда он в руках. Подсказка вещью, а не текстом.
   if (touch?.active && hands) {
-    const b = hands.buttons()
-    touch.setButtons(b.action, b.tool)
+    hands.buttons(buttonState)
+    touch.setButtons(buttonState.action, buttonState.tool)
   }
   wind.update(dt)
   snow.update(dt)
@@ -264,6 +287,6 @@ renderer.setAnimationLoop(() => {
 
   // Мир рисуется внутри рук: они накладывают отдачу на камеру перед кадром
   // и снимают сразу после, а сами идут отдельным проходом поверх.
-  if (hands) hands.renderWorld(renderer, () => atmosphere.composer.render())
+  if (hands) hands.renderWorld(renderer, drawWorld)
   else atmosphere.composer.render()
 })

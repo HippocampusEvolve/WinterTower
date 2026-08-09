@@ -64,11 +64,15 @@ export type Touch = ReturnType<typeof createTouch>
  * lock тач-режиму не нужен.
  */
 export function touchSupported(): boolean {
-  return (
-    new URLSearchParams(location.search).has('touch') ||
-    matchMedia('(pointer: coarse)').matches ||
-    'ontouchstart' in window
-  )
+  return touchForced() || matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window
+}
+
+/**
+ * `?touch` - приказ, а не признак: раскладку кнопок смотрят мышью на десктопе.
+ * Выбор режима по нажатию (main.ts) обязан пропустить этот случай вперёд.
+ */
+export function touchForced(): boolean {
+  return new URLSearchParams(location.search).has('touch')
 }
 
 export function createTouch(opts: TouchOptions) {
@@ -101,6 +105,7 @@ export function createTouch(opts: TouchOptions) {
   const bTool1 = make('tbTool1', 'shovel')
   const bTool2 = make('tbTool2', 'build')
   let shownTool: ToolKind | undefined
+  let shownAction: boolean | undefined // что уже стоит в DOM у кнопки «рука»
 
   /** Нажатие кнопки: без прохода до канваса и без синтетики мыши. */
   function press(btn: HTMLButtonElement, fn: (down: boolean) => void) {
@@ -142,7 +147,12 @@ export function createTouch(opts: TouchOptions) {
    */
   function skip(e: TouchEvent): boolean {
     if (!active) return true
-    if (document.body.classList.contains('paused')) return true
+    if (document.body.classList.contains('paused')) {
+      // Пауза застала палец на экране: снятие сюда уже не дойдёт, а оси так и
+      // остались бы ненулевыми - после снятия паузы тело пошло бы само.
+      if (moveId !== null || lookId !== null) release()
+      return true
+    }
     const t = e.target as Element | null
     return !!(t && t.closest && t.closest('button, a, #gate'))
   }
@@ -150,7 +160,8 @@ export function createTouch(opts: TouchOptions) {
   function onStart(e: TouchEvent) {
     if (skip(e)) return
     e.preventDefault()
-    for (const t of Array.from(e.changedTouches)) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i]!
       if (t.clientX < innerWidth * 0.5) {
         if (moveId !== null) continue
         moveId = t.identifier
@@ -169,7 +180,8 @@ export function createTouch(opts: TouchOptions) {
     if (skip(e)) return
     e.preventDefault()
     const p = player.touch
-    for (const t of Array.from(e.changedTouches)) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i]!
       if (t.identifier === moveId) {
         const dx = t.clientX - ox
         const dy = t.clientY - oy
@@ -194,7 +206,8 @@ export function createTouch(opts: TouchOptions) {
     if (skip(e)) return
     e.preventDefault()
     const p = player.touch
-    for (const t of Array.from(e.changedTouches)) {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i]!
       if (t.identifier === moveId) {
         moveId = null
         p.f = p.r = 0
@@ -205,11 +218,25 @@ export function createTouch(opts: TouchOptions) {
     }
   }
 
+  /**
+   * Отпустить всё: пальцы забыты, оси в ноль. Нужно там, где `onEnd` до нас не
+   * дойдёт: игра встала на паузу с зажатым пальцем (`skip` отсечёт и снятие
+   * тоже), системный жест увёл палец за пределы страницы. Иначе тело идёт само.
+   */
+  function release() {
+    moveId = lookId = null
+    const p = player.touch
+    p.f = p.r = 0
+    p.run = false
+    p.jump = false
+  }
+
   const listen = { passive: false } as const
   addEventListener('touchstart', onStart, listen)
   addEventListener('touchmove', onMove, listen)
   addEventListener('touchend', onEnd, listen)
   addEventListener('touchcancel', onEnd, listen)
+  addEventListener('blur', release)
 
   return {
     get active() {
@@ -232,7 +259,12 @@ export function createTouch(opts: TouchOptions) {
      * текстовой подсказки, но без единого слова в кадре.
      */
     setButtons(action: boolean, tool: ToolKind) {
-      bAct.classList.toggle('hide', !action)
+      // Инструментные кнопки давно переставляются только на смене, а «рука»
+      // трогала DOM каждый кадр, чтобы остаться в том же положении.
+      if (action !== shownAction) {
+        shownAction = action
+        bAct.classList.toggle('hide', !action)
+      }
       if (tool === shownTool) return
       shownTool = tool
       bTool1.classList.toggle('hide', !tool)

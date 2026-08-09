@@ -75,6 +75,9 @@ function materialTable(): Map<THREE.Material, Material> {
 
 export type HandsBody = ViewBody & { position: THREE.Vector3 }
 
+/** Что показывать на тач-кнопках. Объект переиспользуется, см. `buttons`. */
+export type TouchButtons = { action: boolean; tool: 'shovel' | 'axe' | null }
+
 export type Hands = ReturnType<typeof createHands>
 
 export function createHands(opts: {
@@ -82,8 +85,9 @@ export function createHands(opts: {
   camera: THREE.PerspectiveCamera
   dom: HTMLElement
   look: Look
-  /** Рельеф и постройки: по ним бьёт луч удара и по ним же ищется опора. */
-  terrain: THREE.Object3D
+  /** Постройки: по ним бьёт луч удара и по ним же ищется опора. Рельеф лучу
+   * не нужен - его форму знает `heightAt`, и она отвечает без перебора
+   * треугольников (см. terrainHit). */
   solid: THREE.Object3D
   sun: THREE.DirectionalLight
   heightAt: (x: number, z: number) => number
@@ -92,7 +96,7 @@ export function createHands(opts: {
   spawn: THREE.Vector3
   spawnYaw: number
 }) {
-  const { scene, camera, dom, look, terrain, solid, sun, heightAt } = opts
+  const { scene, camera, dom, look, solid, sun, heightAt } = opts
 
   const view = createViewModel(camera, sun, scene.environment)
   const sfx = createSfx(opts.getAudioBus)
@@ -101,7 +105,6 @@ export function createHands(opts: {
   const axe = new Axe(scene, view)
 
   const MATERIAL = materialTable()
-  const targets: THREE.Object3D[] = [terrain, solid]
 
   const ray = new THREE.Raycaster()
   ray.far = REACH
@@ -110,8 +113,10 @@ export function createHands(opts: {
   const _spray = new THREE.Vector3()
   const _nm = new THREE.Matrix3()
   const _aim = new THREE.Vector3()
+  const _point = new THREE.Vector3() // точка попадания в рельеф, живёт до следующего удара
 
   const prompt = document.getElementById('prompt')
+  let promptText: string | null = null // что уже написано в DOM
 
   // --- Опора под точкой ------------------------------------------------------
 
@@ -124,8 +129,57 @@ export function createHands(opts: {
    */
   function surfaceAt(x: number, z: number, fromY: number): number {
     _down.ray.origin.set(x, fromY + 2, z)
-    const hit = _down.intersectObjects(targets, true)[0]
-    return hit ? hit.point.y : heightAt(x, z)
+    // Луч только по постройкам: рельеф отвечает формулой и без перебора
+    // треугольников (см. terrainHit). Настил выше грунта - встаём на него,
+    // иначе на грунт; ради этого выбора луч сюда и поставлен.
+    const hit = _down.intersectObject(solid, true)[0]
+    const ground = heightAt(x, z)
+    return hit && hit.point.y > ground ? hit.point.y : ground
+  }
+
+  // --- Рельеф лучом, но без перебора треугольников ---------------------------
+
+  /**
+   * Где луч входит в рельеф. Марш по аналитической высоте вместо Raycaster.
+   *
+   * Полотно рельефа - 300x300 сегментов, то есть 180 тысяч треугольников без
+   * ускоряющей структуры, и three перебирает их ВСЕ на каждый запрос: сфера
+   * полотна в 460 м камеру всегда накрывает, а `ray.far` перебор не сокращает.
+   * Это стоило рывка кадра ровно в момент контакта - каждый удар лопатой,
+   * каждый взмах топором, каждое нажатие F. Формула рельефа отвечает на
+   * четыре порядка дешевле.
+   *
+   * Шаг грубый, потом бисекция: удар не промахнётся на сантиметр, а лишние
+   * вызовы высоты стоят дороже точности, которой никто не увидит.
+   */
+  function terrainHit(origin: THREE.Vector3, dir: THREE.Vector3, far: number): number | null {
+    const STEP = 0.2
+    let prev = 0
+    if (origin.y - heightAt(origin.x, origin.z) < 0) return null // камера под землёй
+    for (let t = STEP; t <= far; t += STEP) {
+      const y = origin.y + dir.y * t
+      if (y - heightAt(origin.x + dir.x * t, origin.z + dir.z * t) <= 0) {
+        let lo = prev
+        let hi = t
+        for (let i = 0; i < 6; i++) {
+          const mid = (lo + hi) * 0.5
+          const my = origin.y + dir.y * mid
+          if (my - heightAt(origin.x + dir.x * mid, origin.z + dir.z * mid) > 0) lo = mid
+          else hi = mid
+        }
+        return hi
+      }
+      prev = t
+    }
+    return null
+  }
+
+  /** Нормаль рельефа в точке: разность высот по двум осям, как у любого поля. */
+  function terrainNormal(x: number, z: number, out: THREE.Vector3): THREE.Vector3 {
+    const e = 0.25
+    return out
+      .set(heightAt(x - e, z) - heightAt(x + e, z), 2 * e, heightAt(x, z - e) - heightAt(x, z + e))
+      .normalize()
   }
 
   // --- Инструменты в мире ----------------------------------------------------
@@ -228,7 +282,13 @@ export function createHands(opts: {
     camera.getWorldDirection(_dir)
     const x = playerPos.x + _dir.x * 0.8
     const z = playerPos.z + _dir.z * 0.8
-    held.plant(x, surfaceAt(x, z, playerPos.y), z, Math.atan2(_dir.x, _dir.z))
+    const y = surfaceAt(x, z, playerPos.y)
+    // Под ногами обрыв: точка втыкания в 0.8 м вперёд бывает уже за кромкой
+    // площадки, и опора там - скала десятью метрами ниже. Воткнутая туда
+    // лопата потеряна навсегда: поднять её можно только с 2.2 м, а второй
+    // лопаты в мире нет. Отказ честнее потери.
+    if (y < playerPos.y - 1.6) return
+    held.plant(x, y, z, Math.atan2(_dir.x, _dir.z))
     sfx.plant()
   }
 
@@ -246,7 +306,18 @@ export function createHands(opts: {
   function strike(): { point: THREE.Vector3; normal: THREE.Vector3; material: Material } | null {
     camera.getWorldDirection(_dir)
     ray.set(camera.position, _dir)
-    const hit = ray.intersectObjects(targets, true)[0]
+    // Постройки - лучом, рельеф - формулой. Раньше и то, и другое шло одним
+    // `intersectObjects`, и полотно рельефа перебиралось целиком (см. terrainHit).
+    const hit = ray.intersectObject(solid, true)[0]
+    const tGround = terrainHit(camera.position, _dir, REACH)
+
+    // Ближе к игроку то и есть под прицелом.
+    if (tGround !== null && (!hit || tGround < hit.distance)) {
+      _point.copy(camera.position).addScaledVector(_dir, tGround)
+      terrainNormal(_point.x, _point.z, _normal)
+      // Рельеф один на весь гребень и покрыт снегом, значит снег и есть.
+      return { point: _point, normal: _normal, material: 'snow' }
+    }
     if (!hit) return null
 
     // нормаль грани — в мировые оси; без normalMatrix она врёт на всём,
@@ -259,8 +330,6 @@ export function createHands(opts: {
     }
 
     const mesh = hit.object as THREE.Mesh
-    // Рельеф — единственная поверхность без своего материала в таблице:
-    // он один на весь гребень и покрыт снегом, значит снег и есть.
     const material = MATERIAL.get(mesh.material as THREE.Material) ?? 'snow'
     return { point: hit.point, normal: _normal, material }
   }
@@ -330,6 +399,10 @@ export function createHands(opts: {
       if (t === shovel) text = 'F - взять лопату'
       else if (t === axe) text = 'F - взять топор'
     }
+    // DOM трогаем только на смене: раньше класс и текст переставлялись каждый
+    // кадр, чтобы остаться теми же самыми.
+    if (text === promptText) return
+    promptText = text
     prompt.classList.toggle('show', text !== null)
     if (text) prompt.textContent = text
   }
@@ -389,12 +462,14 @@ export function createHands(opts: {
       }
     },
 
-    /** Какие тач-кнопки показывать в этом кадре. */
-    buttons(): { action: boolean; tool: 'shovel' | 'axe' | null } {
-      return {
-        action: shovel.held || axe.held || handTarget() !== null,
-        tool: shovel.held ? 'shovel' : axe.held ? 'axe' : null,
-      }
+    /**
+     * Какие тач-кнопки показывать в этом кадре. Ответ пишется в переданный
+     * объект, а не создаётся заново: зовётся каждый кадр.
+     */
+    buttons(out: TouchButtons): TouchButtons {
+      out.action = shovel.held || axe.held || handTarget() !== null
+      out.tool = shovel.held ? 'shovel' : axe.held ? 'axe' : null
+      return out
     },
 
     /** Для отладки из консоли: во что смотрим и чем это считается. */
