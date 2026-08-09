@@ -86,11 +86,16 @@ export function createAmbient(wind: Wind) {
     // соседней вкладки. Возврат заодно поднимает контекст, заглохший не по
     // нашей воле - на таче гейт после входа не появляется, и другого случая
     // позвать resume попросту нет.
-    document.addEventListener('visibilitychange', () => {
-      if (!ctx) return
-      if (document.hidden) void ctx.suspend()
-      else if (ctx.state !== 'running') void ctx.resume()
-    })
+    //
+    // Проверка на DOM не лишняя: этот же модуль считается на Node в проверке
+    // звука (`tools/sound-check-kit`), где вкладок нет вовсе.
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (!ctx) return
+        if (document.hidden) void ctx.suspend()
+        else if (ctx.state !== 'running') void ctx.resume()
+      })
+    }
     const buf = noiseBuffer(ctx)
 
     const src = () => {
