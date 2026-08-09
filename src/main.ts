@@ -100,7 +100,6 @@ hands = createHands({
   camera,
   dom: renderer.domElement,
   look,
-  terrain: world.terrain,
   solid: world.solid,
   sun: atmosphere.sun,
   heightAt,
