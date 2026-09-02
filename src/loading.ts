@@ -7,7 +7,9 @@
  * первым, раньше всего, что тянет за собой мир.
  *
  * Считает один общий `DefaultLoadingManager` — через него идут все загрузки
- * three, так что счётчик покрывает отделку мира целиком.
+ * three, так что счётчик покрывает отделку мира целиком. Саму полосу ведёт
+ * `boot.js`: он знает и ход по вехам, и вот эти доли, и берёт большее из них.
+ * Отсюда уходит только доля загрузчика.
  *
  * Ждать здесь больше нечего, и это не упущение. Экран входа открыт с первой
  * секунды и мира не ждёт (см. `shell.ts`), а карты доезжают уже в открытый
@@ -20,15 +22,15 @@
 
 import * as THREE from 'three'
 
-const bar = document.getElementById('loadBar')
-const fill = document.getElementById('loadFill')
+declare global {
+  interface Window {
+    __FTE_BOOT__?: { progress(fraction: number): void }
+  }
+}
 
 THREE.DefaultLoadingManager.onProgress = (_url, loaded, total) => {
-  if (!bar || !fill || !total) return
-  bar.classList.add('known')
-  fill.style.width = `${Math.min(1, loaded / total) * 100}%`
-  bar.setAttribute('aria-valuemin', '0')
-  bar.setAttribute('aria-valuemax', String(total))
-  bar.setAttribute('aria-valuenow', String(loaded))
-  bar.setAttribute('aria-valuetext', `${loaded} из ${total} ресурсов`)
+  if (!total) return
+  window.__FTE_BOOT__?.progress(loaded / total)
 }
+
+export {}
