@@ -1,9 +1,12 @@
 /**
  * hands/index.ts — руки: что игрок держит, чем машет и во что попадает.
  *
- * Слой собирает вместе четыре независимые части: риг рук (`viewmodel.ts`),
- * механику замаха (`tool.ts`), сами инструменты (`shovel.ts`, `axe.ts`) и звук
- * (`sfx.ts`). Здесь же — единственное место, где они встречаются с миром.
+ * Слой собирает вместе четыре независимые части: риг рук и механику замаха
+ * (обе из ядра, `world-core/core`), сами инструменты (`shovel.ts`, `axe.ts`) и
+ * звук (`sfx.ts`). Здесь же — единственное место, где они встречаются с миром.
+ *
+ * Своего ввода у рук нет: клавиша F, кнопки мыши и кнопки на экране сводятся в
+ * одно намерение слоем ввода ядра, а сюда приходят колбэками `action` и `hold`.
  *
  * Правило, ради которого всё разделено: **инструмент не знает, во что попал.**
  * Замах доходит до кадра контакта и спрашивает «есть ли тут материя?». Отвечает
@@ -17,12 +20,12 @@
  */
 
 import * as THREE from 'three'
+import { ViewModel, type Input, type SmoothLook, type ViewBody } from 'world-core/core'
 import { MAT } from '../world/materials'
-import { createViewModel, type ViewBody } from './viewmodel'
-import { Shovel, type ShovelStroke } from './shovel'
+import { PALETTE, SETTINGS } from '../atmosphere'
+import { Shovel } from './shovel'
 import { Axe } from './axe'
 import { createSfx, type Material } from './sfx'
-import type { Look } from '../look'
 
 /**
  * Докуда дотягивается инструмент, м. Дальше замах уходит в воздух.
@@ -73,7 +76,7 @@ function materialTable(): Map<THREE.Material, Material> {
   return t
 }
 
-export type HandsBody = ViewBody & { position: THREE.Vector3 }
+export type HandsBody = ViewBody
 
 /** Что показывать на тач-кнопках. Объект переиспользуется, см. `buttons`. */
 export type TouchButtons = { action: boolean; tool: 'shovel' | 'axe' | null }
@@ -83,8 +86,10 @@ export type Hands = ReturnType<typeof createHands>
 export function createHands(opts: {
   scene: THREE.Scene
   camera: THREE.PerspectiveCamera
-  dom: HTMLElement
-  look: Look
+  /** Взгляд ядра. Рукам он нужен ради одного клевка при приземлении. */
+  look: SmoothLook
+  /** Ввод ядра: по нему руки узнают, в мире ли мы и играем ли пальцем. */
+  input: Input
   /** Постройки: по ним бьёт луч удара и по ним же ищется опора. Рельеф лучу
    * не нужен - его форму знает `heightAt`, и она отвечает без перебора
    * треугольников (см. terrainHit). */
@@ -96,9 +101,24 @@ export function createHands(opts: {
   spawn: THREE.Vector3
   spawnYaw: number
 }) {
-  const { scene, camera, dom, look, solid, sun, heightAt } = opts
+  const { scene, camera, look, input, solid, sun, heightAt } = opts
 
-  const view = createViewModel(camera, sun, scene.environment)
+  // Слой рук - из ядра (`world-core/core`). Свой мировой FOV мира (62° против
+  // 75° в Snowfall) отдаётся опцией: от него считается компенсация узкого
+  // обзора рига, и без неё качка предмета уезжала бы вглубь кадра.
+  //
+  // Свет рига втрое ярче мирового, и это не ошибка подбора. Мир после сцены
+  // проходит грейдинг композитора: яркость, контраст и насыщенность поднимают
+  // весь кадр, а текстуры вдобавок компенсируются множителем colorGain
+  // (`world/materials.ts`). Руки не получают ни того, ни другого - при мировых
+  // значениях инструмент выходил тёмным силуэтом на светлом кадре.
+  const view = new ViewModel(camera, {
+    keyDir: sun.position, // живая ссылка: солнце ведёт атмосфера, блик ползёт за ним
+    key: { color: PALETTE.fogFar, intensity: SETTINGS.sunLight * 7.4 },
+    fill: { sky: PALETTE.skyTop, ground: PALETTE.snowShadow, intensity: SETTINGS.skyLight * 1.9 },
+    environment: scene.environment,
+    worldFov: 62,
+  })
   const sfx = createSfx(opts.getAudioBus)
 
   const shovel = new Shovel(scene, view)
@@ -224,27 +244,12 @@ export function createHands(opts: {
   let chopHeld = false
   let hintT = 0 // сек показа подсказки после взятия инструмента
 
-  // «Мы в мире» решает слой взгляда: на таче pointer lock не используется
+  // Своих слушателей у рук больше нет. Клавиша F, кнопки мыши и кнопки на
+  // экране сводятся в одно намерение слоем ввода ядра, а сюда приходят
+  // колбэками (`action` и `hold` ниже) - и приходят одинаково, откуда бы ни
+  // пришли. «Мы в мире» решает тот же слой: на таче pointer lock не берётся
   // вовсе, и проверка `document.pointerLockElement` там всегда врёт.
-  const locked = () => look.locked
-
-  dom.addEventListener('mousedown', (e) => {
-    if (!locked()) return
-    if (e.button === 0) {
-      if (shovel.held) digHeld = true
-      else if (axe.held) chopHeld = true
-    } else if (e.button === 2 && shovel.held) buildHeld = true
-  })
-  addEventListener('mouseup', (e) => {
-    if (e.button === 0) {
-      digHeld = false
-      chopHeld = false
-    } else if (e.button === 2) buildHeld = false
-  })
-  addEventListener('blur', () => {
-    digHeld = buildHeld = chopHeld = false
-  })
-  dom.addEventListener('contextmenu', (e) => e.preventDefault())
+  const locked = () => input.locked
 
   /** Что возьмёт F: ближайший К ПРИЦЕЛУ инструмент в пределах вытянутой руки. */
   function handTarget(): Shovel | Axe | null {
@@ -292,9 +297,6 @@ export function createHands(opts: {
     sfx.plant()
   }
 
-  addEventListener('keydown', (e) => {
-    if (e.code === 'KeyF' && locked()) handAction(camera.position)
-  })
 
   // --- Врезание --------------------------------------------------------------
 
@@ -334,7 +336,7 @@ export function createHands(opts: {
     return { point: hit.point, normal: _normal, material }
   }
 
-  function onShovelImpact(kind: ShovelStroke): boolean {
+  function onShovelImpact(kind: string): boolean {
     const hit = strike()
     if (!hit) {
       sfx.whiff()
@@ -391,7 +393,7 @@ export function createHands(opts: {
     let text: string | null = null
     // Пальцем клавиш нет вовсе: там подсказку даёт сама кнопка, которая
     // появилась. Писать «ЛКМ - копать» на телефоне значит врать игроку.
-    if (!locked() || look.isTouch) text = null
+    if (!locked() || input.touch.active) text = null
     else if (shovel.held) text = hintT > 0 ? 'ЛКМ - копать · ПКМ - намыть · F - воткнуть' : null
     else if (axe.held) text = hintT > 0 ? 'ЛКМ - рубить · F - воткнуть' : null
     else {
@@ -415,7 +417,7 @@ export function createHands(opts: {
 
   /**
    * Отдача накладывается на мировую камеру ровно на время рендера и снимается
-   * сразу после. Держать её в ориентации нельзя: `look.ts` пересобирает
+   * сразу после. Держать её в ориентации нельзя: взгляд ядра пересобирает
    * кватернион каждый кадр, а риг рук меряет по камере угловую скорость взгляда
    * и прочитал бы оставленную отдачу как рывок мыши.
    */
@@ -428,7 +430,18 @@ export function createHands(opts: {
     camera.rotateZ(-roll)
     camera.rotateX(-pitch)
 
+    // Тонмаппинг включается только на этом проходе. Мир уходит в буфер
+    // композитора и тонмаппится эффектом на выходе (`atmosphere.ts`), у самого
+    // рендерера он выключен - без этой пары строк инструмент оказался бы в
+    // другой гамме, чем всё за ним. Ядро про грейдинг мира не знает и знать не
+    // должно, поэтому оборачиваем здесь.
+    const tone = renderer.toneMapping
+    const exposure = renderer.toneMappingExposure
+    renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.toneMappingExposure = SETTINGS.exposure
     view.render(renderer) // руки — последним проходом, поверх мира и со своим depth
+    renderer.toneMapping = tone
+    renderer.toneMappingExposure = exposure
   }
 
   return {

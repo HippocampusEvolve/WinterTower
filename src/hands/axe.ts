@@ -14,8 +14,9 @@
 
 import * as THREE from 'three'
 import { PALETTE } from '../atmosphere'
-import { HeldTool, type Stroke } from './tool'
+import { HeldTool, type Stroke } from 'world-core/core'
 import { Burst } from './burst'
+import { pz } from './stroke'
 
 const REST = new THREE.Euler(-0.2, 0.3, Math.PI + 0.15)
 const PIVOT_Y = 0.52 // нижняя кисть на середине топорища — центр вращения
@@ -27,7 +28,7 @@ const TIP = new THREE.Vector3(0.34, -0.17, -0.74)
  * Рубка — диагональный секущий мах: занос головы за правое плечо (топор почти
  * покидает кадр — замах живёт за спиной) → косой бросок сверху-справа
  * вниз-влево-вперёд, кромка ведёт и в кадре контакта ложится под прицел →
- * hitstop в материале → выдёргивание лезвия и оседание. `cross` (tool.ts)
+ * hitstop в материале → выдёргивание лезвия и оседание. `cross` (риг ядра)
  * чередует диагональ — удары ложатся крест-накрест, как при настоящей работе.
  * Знаки поворотов — для головы НАД пивотом: +rx запрокидывает её за плечо,
  * -rx хлещет вперёд-вниз; -rz кренит занос вправо, +rz проносит голову влево.
@@ -41,7 +42,7 @@ const STROKES: Record<AxeStroke, Stroke> = {
     punch: { pitch: 1.15, roll: 0.85 },
     px: [[0, 0], [0.37, 0.14, 'io'], [0.45, -0.14, 'in'], [0.525, -0.14, 'hold'], [0.7, -0.05, 'out'], [1, 0, 'out']],
     py: [[0, 0], [0.37, 0.18, 'io'], [0.45, -0.16, 'in'], [0.525, -0.16, 'hold'], [0.7, 0.02, 'out'], [1, 0, 'out']],
-    pz: [[0, 0], [0.37, 0.12, 'io'], [0.45, -0.36, 'in'], [0.525, -0.36, 'hold'], [0.7, -0.1, 'out'], [1, 0, 'out']],
+    pz: pz([[0, 0], [0.37, 0.12, 'io'], [0.45, -0.36, 'in'], [0.525, -0.36, 'hold'], [0.7, -0.1, 'out'], [1, 0, 'out']]),
     rx: [[0, 0], [0.37, 0.66, 'io'], [0.45, -0.72, 'in'], [0.525, -0.72, 'hold'], [0.7, 0.14, 'out'], [1, 0, 'out']],
     ry: [[0, 0], [0.37, -0.36, 'io'], [0.45, 0.32, 'in'], [0.525, 0.32, 'hold'], [0.7, 0.06, 'out'], [1, 0, 'out']],
     rz: [[0, 0], [0.37, -0.4, 'io'], [0.45, 0.38, 'in'], [0.525, 0.38, 'hold'], [0.7, 0.08, 'out'], [1, 0, 'out']],
@@ -143,7 +144,7 @@ function buildAxe(): THREE.Group {
   return g
 }
 
-export class Axe extends HeldTool<AxeStroke> {
+export class Axe extends HeldTool {
   /** Скол: ледяная и каменная крошка. Тяжелее снежной, летит скупее. */
   readonly chips: Burst
   /** Снежная пыль, сбитая ударом. Идёт вместе со сколом. */
@@ -177,7 +178,7 @@ export class Axe extends HeldTool<AxeStroke> {
     this.dust.spawn(point, dir, 10)
   }
 
-  override update(dt: number, onImpact: (kind: AxeStroke) => boolean) {
+  override update(dt: number, onImpact: (kind: string) => boolean) {
     this.chips.update(dt)
     this.dust.update(dt)
     super.update(dt, onImpact)

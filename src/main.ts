@@ -1,7 +1,12 @@
 /**
  * main.ts — точка входа: рендерер, мир, игрок, цикл.
- * Логика внешнего вида живёт в atmosphere.ts, движение — в player.ts,
- * взгляд — в look.ts, всё, что в руках, — в hands/.
+ * Логика внешнего вида живёт в atmosphere.ts, всё, что в руках, — в hands/.
+ *
+ * Управление целиком из общего ядра миров (`world-core/core`): тело, взгляд,
+ * ввод с намерением, риг инструмента и сцена рук. Мир отдаёт телу только свою
+ * форму (`support.ts`) и свои числа — те, которыми походка станции отличается
+ * от чужой. Так же живёт Snowfall, и это единственный способ не чинить один и
+ * тот же прыжок дважды.
  */
 
 // Штамп версии ставится раньше всего остального по той же причине, по которой
@@ -24,8 +29,8 @@ import * as THREE from 'three'
 import { createShell } from './shell'
 import { keepOffline } from './offline'
 import { createAtmosphere } from './atmosphere'
-import { createLook } from './look'
-import { createPlayer } from './player'
+import { Body, Input, SmoothLook } from 'world-core/core'
+import { createSupport, STEP_UP, type Surface } from './support'
 import { createHands, type Hands, type TouchButtons } from './hands'
 import { createTouch, touchForced, touchSupported, type Touch } from './touch'
 import { createWind } from './wind'
@@ -100,21 +105,105 @@ const octree = collision.octree
 mark('мир собран')
 console.log(`[wintertower] мир собран за ${tWorld.toFixed(0)} мс, тёплых источников: ${world.warmCount}`)
 
-// Взгляд владеет ориентацией камеры, контроллер — телом. Разделение нужно
-// физике: ей требуется чистое направление, без кренов и клевков (см. look.ts).
-const look = createLook(camera, renderer.domElement)
+// Взгляд владеет ориентацией камеры, тело — движением. Разделение нужно
+// физике: ей требуется чистое направление, без кренов и клевков.
+//
+// Чувствительность и крен на стрейфе — числа станции: мышь здесь чуть острее
+// снежной, а вбок клонит меньше и на большей скорости (там 1.5 м/с, тут 2.5).
+const look = new SmoothLook(camera, renderer.domElement, {
+  sens: 0.0022,
+  strafeRoll: 0.02,
+  strafeAt: 2.5,
+})
+look.setYaw(world.yaw) // спавн смотрит на башню и доворачиваться не должен
 
 // Руки создаются позже игрока (им нужен звук и собранный мир), а шаги и
 // приземление они получают отсюда — потому ссылка отложенная, а не прямая.
 let hands: Hands | null = null
 
-const player = createPlayer(camera, look, octree, heightAt, world.spawn, world.yaw, {
-  onStep: (_x, _y, _z, _side, running, surface) => hands?.sfx.footstep(running, surface),
-  onLand: (surface, impact) => {
+// Ввод: клавиши, мышь и палец сводятся в одно намерение. F и кнопки мыши
+// уходят колбэками — что ими делать, знает только этот мир.
+const input = new Input({
+  look,
+  target: renderer.domElement,
+  onAction: () => hands?.action(),
+  onTool: (slot, down) => hands?.hold(slot, down),
+})
+
+/**
+ * Ниже этой отметки мир кончился. Провалиться можно только сквозь дыру в
+ * геометрии или соскользнув с отвеса, где пола нет вовсе; молча оставлять
+ * человека падать до бесконечности нельзя, и вернуть его есть только куда —
+ * на площадку, с которой он вышел.
+ */
+const FALL_RESET_Y = -120
+
+const player = new Body({
+  camera,
+  input,
+  support: createSupport({ octree, heightAt }),
+  spawn: world.spawn,
+  onStep: (_x, _z, _dir, _side, running, surface) =>
+    hands?.sfx.footstep(running, surface as Surface),
+  onLand: (_x, _z, surface, impact) => {
     hands?.land(impact)
-    hands?.sfx.land(surface, impact)
+    hands?.sfx.land(surface as Surface, impact)
+  },
+
+  // --- Числа станции ---------------------------------------------------------
+  // Формула движения общая с Snowfall (разгон экспоненциальным догоном целевой
+  // скорости), а числа здесь свои: шаг быстрее, прыжок выше, гравитация тяжелее.
+  eye: 1.68,
+  // Высота капсулы: 1.68 глаза плюс радиус сверху — ровно те 2.02, которыми
+  // меряет проходы `tools/room.ts` и компоновку `world/check.ts`. Число одно
+  // на всех, и расходиться ему нельзя.
+  height: 2.02,
+  radius: 0.34,
+  walk: 3.4, // м/с — неспешный шаг по снегу
+  run: 6.2,
+  jump: 8.0,
+  gravity: 26,
+  bounds: null, // квадрата у станции нет: с гребня уводит рельеф, а не стенка
+  // Разгон и торможение у ядра идут одним числом. У башни своего разгона не
+  // было вовсе (ускорение 90 м/с² упиралось в потолок скорости за сорок
+  // миллисекунд), а торможение шло трением 9 1/с — его и берём.
+  accel: 9,
+  stepUp: STEP_UP,
+  bobWalk: 0.032,
+  bobRun: 0.055,
+  bobRate: 1.9,
+  strideWalk: 1.6,
+  strideRun: 2.0,
+  // След ставится ровно под ногу: шага вперёд от оси в этом мире не было.
+  stepAhead: 0,
+  stepSide: 0.17,
+  landAt: -4, // мягче — не удар, а просто спуск со ступени
+  // Обзор постоянный: раскачки на бегу здесь нет, кадр строился под 62°.
+  fov: 62,
+  fovRun: 62,
+  // Выносливость: полный запас сгорает за 11 с бега, восстанавливается за 9 с
+  // стоя и за 20 с на ходу. Числа совпадают со снежными, но записаны явно —
+  // это утверждение мира, а не согласие с чужим умолчанием.
+  stamina: {
+    drain: 1 / 11,
+    gainIdle: 1 / 9,
+    gainWalk: 1 / 20,
+    recover: 0.3,
+    runAt: 0.02,
+    jumpCost: 0.06,
   },
 })
+
+/** Перенести тело, не гоняя его туда физикой. */
+function teleport(x: number, y: number, z: number): void {
+  player.pos.set(x, y, z)
+  player.vel.set(0, 0, 0)
+  player.vy = 0
+  player.holdY = null
+  // Камера переезжает СРАЗУ: иначе кадр между переносом и следующим тиком
+  // смотрел бы из покинутой точки, и это читается рывком.
+  player.syncCamera()
+}
 
 // --- Погода ------------------------------------------------------------------
 // Ветер один на всех: по нему летит снег и по нему же дышит шум эмбиента.
@@ -138,12 +227,12 @@ atmosphere.onApply(() => {
 
 // --- Руки ---------------------------------------------------------------------
 // Лопата и топор стоят в мире у точки спавна; F берёт их в руки. Слой рисуется
-// отдельным проходом со своей камерой — см. hands/viewmodel.ts.
+// отдельным проходом со своей камерой — риг из ядра, см. hands/index.ts.
 hands = createHands({
   scene,
   camera,
-  dom: renderer.domElement,
   look,
+  input,
   solid: world.solid,
   sun: atmosphere.sun,
   heightAt,
@@ -170,16 +259,10 @@ const awakening = createAwakening({
 
 // --- Управление пальцем -------------------------------------------------------
 // Создаётся только на тач-устройствах: на десктопе ни кнопок, ни слушателей.
-// Слой узкий - он пишет оси в тело и крутит взгляд, а что делает «рука» и что
-// делают кнопки инструмента, решается здесь.
-const touch: Touch | null = touchSupported()
-  ? createTouch({
-      player,
-      look,
-      onAction: () => hands?.action(),
-      onTool: (slot, down) => hands?.hold(slot, down),
-    })
-  : null
+// Сам слой — в ядре, здесь остаются иконки станции и правила видимости кнопок
+// (touch.ts). Что делают «рука» и кнопки инструмента, тач не решает: обе
+// уходят в тот же ввод, что клавиша F и кнопки мыши (см. `Input` выше).
+const touch: Touch | null = touchSupported() ? createTouch(input, look) : null
 
 /**
  * Кадр в файл. Горячей клавиши нет (игроку она не нужна), зовётся из консоли:
@@ -211,6 +294,11 @@ Object.assign(window, {
     camera,
     player,
     look,
+    input,
+    teleport,
+    // Появление держит физику, пока не отойдёт пелена: автопроверке нужно
+    // знать, с какого момента её команды вообще что-то значат.
+    awakening,
     hands,
     atmosphere,
     octree,
@@ -413,6 +501,9 @@ function frame(frameAt: number) {
     // прошлокадровому (иначе на быстром развороте движение отстаёт на кадр).
     look.update(dt, player)
     player.update(dt)
+    // Провалился сквозь мир — вернуть на площадку. У тела ядра такой оговорки
+    // нет и быть не должно: где у мира кончается низ, знает только мир.
+    if (player.pos.y < FALL_RESET_Y) teleport(world.spawn.x, world.spawn.y, world.spawn.z)
     hands?.update(dt, player)
   }
   // Кнопка «рука» появляется, только когда ею есть что сделать, а кнопки

@@ -1,34 +1,22 @@
 /**
- * touch.ts — управление пальцем: телефон и планшет.
+ * touch.ts — управление пальцем этого мира.
  *
- * Никаких видимых джойстиков. Палец на ЛЕВОЙ половине экрана ведёт тело
- * (аналоговый вектор от точки касания; дальше увёл - бег), палец на ПРАВОЙ
- * поворачивает взгляд. Кнопки редкие и тонкие: прыжок висит всегда, «рука»
- * (аналог F) - только когда ею есть что сделать, кнопки инструмента - только
+ * Сам слой живёт в ядре (`world-core/core`, `TouchControls`): пальцы, оси,
+ * поворот взгляда, кнопки как элементы, пропуск касаний по экранам оболочки.
+ * Здесь остаётся только то, что про станцию: какие кнопки бывают, как они
+ * выглядят и когда показываются. Раскладку в кадре им даёт CSS страницы по
+ * этим же id.
+ *
+ * Никаких видимых джойстиков и здесь нет: палец на ЛЕВОЙ половине экрана ведёт
+ * тело, палец на ПРАВОЙ поворачивает взгляд. Кнопки редкие и тонкие: прыжок
+ * висит всегда, «рука» - когда ею есть что сделать, кнопки инструмента -
  * когда он в руках.
- *
- * Это не «версия для телефона», а проверка на прочность всего управления.
- * Клавиш на телефоне нет вообще, поэтому схема, работающая пальцем, тем более
- * работает мышью, - и ровно она нужна человеку, пришедшему из соцсети
- * (ROADMAP, «интуитивное управление вместо клавиш»).
- *
- * Интеграция узкая, и это намеренно: слой пишет аналоговые оси в `player.touch`
- * и поворачивает взгляд через `look.rotateBy`. Ни мира, ни инструментов он не
- * знает - что делает «рука» и что делают кнопки инструмента, решает тот, кто
- * его создал.
- *
- * Перенесён из Snowfall, где схема уже обкатана; расхождений два, оба от мира:
- * инструменты здесь лопата и топор (в Snowfall ещё и полено), а поворот взгляда
- * идёт в `rotateBy` с обеими осями сразу.
  */
 
-import type { Player } from './player'
-import type { Look } from './look'
+import { TouchControls, touchForced, touchSupported } from 'world-core/core'
+import type { Input, SmoothLook } from 'world-core/core'
 
-const R = 52 // px полного хода пальца от точки касания до максимума скорости
-const RUN_AT = 1.45 // во сколько R надо увести палец, чтобы перейти на бег
-const DEAD = 7 // px мёртвой зоны - дрожь пальца не шевелит тело
-const SENS = 0.0042 // рад/px взгляда (палец грубее мыши - чувствительность выше)
+export { touchForced, touchSupported }
 
 /** Иконки: только штрих, без заливок и подложек - белые и тихие. */
 const ICONS = {
@@ -47,242 +35,61 @@ const ICONS = {
 /** Какой инструмент в руках: от этого зависят кнопки. */
 export type ToolKind = 'shovel' | 'axe' | null
 
-export type TouchOptions = {
-  player: Player
-  look: Look
-  /** Аналог F: контекстное действие по месту. */
-  onAction: () => void
-  /** Кнопка инструмента: слот 1 - копать/рубить, слот 2 - намыть. Держать = бить. */
-  onTool: (slot: 1 | 2, down: boolean) => void
-}
-
 export type Touch = ReturnType<typeof createTouch>
 
-/**
- * Есть ли смысл заводить тач. `?touch` включает его на десктопе - посмотреть
- * раскладку кнопок, не доставая телефон; взгляд там мышью не водится, pointer
- * lock тач-режиму не нужен.
- */
-export function touchSupported(): boolean {
-  return touchForced() || matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window
-}
+export function createTouch(input: Input, look: SmoothLook) {
+  const touch = new TouchControls({
+    input,
+    look,
+    // касание кнопок оболочки (экран входа, пауза, выход на витрину) не
+    // глушим - иначе до `click` дело не дойдёт и из мира будет не выйти
+    passThrough: 'button, a, #gate',
+    buttons: [
+      {
+        id: 'tbJump',
+        label: 'Прыгнуть',
+        icon: ICONS.jump,
+        shown: true,
+        // держим факт нажатия - фронт ловит само тело
+        press: (down) => (input.touch.jump = down),
+      },
+      { id: 'tbAct', label: 'Взаимодействовать', icon: ICONS.act, press: (down) => down && input.pressAction() },
+      // держать кнопку инструмента = держать ЛКМ/ПКМ: замахи цепочкой
+      { id: 'tbTool1', label: 'Использовать инструмент', icon: ICONS.shovel, press: (down) => input.pressTool(1, down) },
+      { id: 'tbTool2', label: 'Насыпать снег', icon: ICONS.build, press: (down) => input.pressTool(2, down) },
+    ],
+  })
 
-/**
- * `?touch` - приказ, а не признак: раскладку кнопок смотрят мышью на десктопе.
- * Выбор режима по нажатию (main.ts) обязан пропустить этот случай вперёд.
- */
-export function touchForced(): boolean {
-  return new URLSearchParams(location.search).has('touch')
-}
-
-export function createTouch(opts: TouchOptions) {
-  const { player, look, onAction, onTool } = opts
-
-  let active = false
-  let moveId: number | null = null // палец движения (левая половина)
-  let lookId: number | null = null // палец взгляда (правая половина)
-  let ox = 0
-  let oy = 0
-  let lx = 0
-  let ly = 0
-
-  // --- Кнопки ---------------------------------------------------------------
-  const ui = document.createElement('div')
-  ui.id = 'touchUI'
-  document.body.appendChild(ui)
-
-  function make(id: string, icon: keyof typeof ICONS, label: string): HTMLButtonElement {
-    const b = document.createElement('button')
-    b.id = id
-    b.type = 'button'
-    b.className = 'tbtn hide'
-    b.setAttribute('aria-label', label)
-    b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS[icon]}</svg>`
-    ui.appendChild(b)
-    return b
-  }
-
-  const bJump = make('tbJump', 'jump', 'Прыгнуть')
-  const bAct = make('tbAct', 'act', 'Взаимодействовать')
-  const bTool1 = make('tbTool1', 'shovel', 'Использовать инструмент')
-  const bTool2 = make('tbTool2', 'build', 'Насыпать снег')
+  // Что уже стоит в DOM. Видимость приходит из кадра, а трогать разметку
+  // шестьдесят раз в секунду, чтобы оставить её той же самой, незачем.
+  let shownAction: boolean | undefined
   let shownTool: ToolKind | undefined
-  let shownAction: boolean | undefined // что уже стоит в DOM у кнопки «рука»
-
-  /** Pointer Events плюс keyboard/switch click, без прохода до канваса. */
-  function press(btn: HTMLButtonElement, fn: (down: boolean) => void) {
-    let pressed = false
-    btn.addEventListener('pointerdown', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      pressed = true
-      try { btn.setPointerCapture(e.pointerId) } catch { /* capture необязателен */ }
-      fn(true)
-    })
-    const up = (e: Event) => {
-      e.preventDefault()
-      e.stopPropagation()
-      if (!pressed) return
-      pressed = false
-      fn(false)
-    }
-    btn.addEventListener('pointerup', up)
-    btn.addEventListener('pointercancel', up)
-    btn.addEventListener('lostpointercapture', up)
-    btn.addEventListener('click', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      if (e.detail === 0) {
-        fn(true)
-        fn(false)
-      }
-    })
-  }
-
-  // Прыжок держим фактом нажатия: фронт ловит сам контроллер (jumpHeld).
-  press(bJump, (down) => (player.touch.jump = down))
-  press(bAct, (down) => down && onAction())
-  press(bTool1, (down) => onTool(1, down))
-  press(bTool2, (down) => onTool(2, down))
-
-  // --- Пальцы на экране -----------------------------------------------------
-
-  /**
-   * Касания экранов оболочки (вход, пауза, выход на витрину) не глушим - иначе
-   * до `click` дело не дойдёт и из мира будет не выйти.
-   *
-   * Проверок две, и вторая не лишняя. Попадание в узел (`closest`) держится на
-   * том, что экран входа накрывает кадр целиком: стоит ему однажды перестать
-   * это делать - и палец мимо него поведёт тело за спиной у остановленной игры.
-   * Поэтому спрашиваем ещё и состояние оболочки напрямую: `body.paused` стоит,
-   * пока игрок не вошёл в мир.
-   */
-  function skip(e: TouchEvent): boolean {
-    if (!active) return true
-    if (document.body.classList.contains('paused')) {
-      // Пауза застала палец на экране: снятие сюда уже не дойдёт, а оси так и
-      // остались бы ненулевыми - после снятия паузы тело пошло бы само.
-      if (moveId !== null || lookId !== null) release()
-      return true
-    }
-    const t = e.target as Element | null
-    return !!(t && t.closest && t.closest('button, a, #gate'))
-  }
-
-  function onStart(e: TouchEvent) {
-    if (skip(e)) return
-    e.preventDefault()
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const t = e.changedTouches[i]!
-      if (t.clientX < innerWidth * 0.5) {
-        if (moveId !== null) continue
-        moveId = t.identifier
-        ox = t.clientX
-        oy = t.clientY
-      } else {
-        if (lookId !== null) continue
-        lookId = t.identifier
-        lx = t.clientX
-        ly = t.clientY
-      }
-    }
-  }
-
-  function onMove(e: TouchEvent) {
-    if (skip(e)) return
-    e.preventDefault()
-    const p = player.touch
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const t = e.changedTouches[i]!
-      if (t.identifier === moveId) {
-        const dx = t.clientX - ox
-        const dy = t.clientY - oy
-        const len = Math.hypot(dx, dy)
-        if (len < DEAD) {
-          p.f = p.r = 0
-          p.run = false
-          continue
-        }
-        p.r = Math.max(-1, Math.min(1, dx / R))
-        p.f = Math.max(-1, Math.min(1, -dy / R))
-        p.run = len > R * RUN_AT && p.f > 0.5 // бег - только уверенно вперёд
-      } else if (t.identifier === lookId) {
-        look.rotateBy(-(t.clientX - lx) * SENS, -(t.clientY - ly) * SENS)
-        lx = t.clientX
-        ly = t.clientY
-      }
-    }
-  }
-
-  function onEnd(e: TouchEvent) {
-    if (skip(e)) return
-    e.preventDefault()
-    const p = player.touch
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const t = e.changedTouches[i]!
-      if (t.identifier === moveId) {
-        moveId = null
-        p.f = p.r = 0
-        p.run = false
-      } else if (t.identifier === lookId) {
-        lookId = null
-      }
-    }
-  }
-
-  /**
-   * Отпустить всё: пальцы забыты, оси в ноль. Нужно там, где `onEnd` до нас не
-   * дойдёт: игра встала на паузу с зажатым пальцем (`skip` отсечёт и снятие
-   * тоже), системный жест увёл палец за пределы страницы. Иначе тело идёт само.
-   */
-  function release() {
-    moveId = lookId = null
-    const p = player.touch
-    p.f = p.r = 0
-    p.run = false
-    p.jump = false
-  }
-
-  const listen = { passive: false } as const
-  addEventListener('touchstart', onStart, listen)
-  addEventListener('touchmove', onMove, listen)
-  addEventListener('touchend', onEnd, listen)
-  addEventListener('touchcancel', onEnd, listen)
-  addEventListener('blur', release)
 
   return {
     get active() {
-      return active
+      return touch.active
     },
 
     /** Войти в мир: pointer lock тут не нужен, просто включаемся. */
-    activate() {
-      if (active) return
-      active = true
-      look.setTouchMode(true)
-      ui.classList.add('on')
-      bJump.classList.remove('hide')
-      document.body.classList.add('touch-mode')
-    },
+    activate: () => touch.activate(),
 
     /**
      * Видимость контекстных кнопок - из кадра. `action` держит «руку»: она
-     * появляется, только когда ей есть что сделать. Это тот же принцип, что у
+     * появляется, только когда ей есть что сделать. Тот же принцип, что у
      * текстовой подсказки, но без единого слова в кадре.
      */
     setButtons(action: boolean, tool: ToolKind) {
-      // Инструментные кнопки давно переставляются только на смене, а «рука»
-      // трогала DOM каждый кадр, чтобы остаться в том же положении.
       if (action !== shownAction) {
         shownAction = action
-        bAct.classList.toggle('hide', !action)
+        touch.show('tbAct', action)
       }
       if (tool === shownTool) return
       shownTool = tool
-      bTool1.classList.toggle('hide', !tool)
-      bTool2.classList.toggle('hide', tool !== 'shovel')
-      if (tool) bTool1.querySelector('svg')!.innerHTML = ICONS[tool]
-      bTool1.setAttribute('aria-label', tool === 'axe' ? 'Рубить топором' : 'Копать лопатой')
+      touch.show('tbTool1', !!tool)
+      touch.show('tbTool2', tool === 'shovel')
+      const label = tool === 'axe' ? 'Рубить топором' : 'Копать лопатой'
+      if (tool) touch.setIcon('tbTool1', ICONS[tool], label)
+      else touch.get('tbTool1')?.setAttribute('aria-label', label)
     },
   }
 }
