@@ -2,7 +2,7 @@
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>WinterTower</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🏔️</text></svg>" />
     <!-- Прелоада карт здесь НЕТ, и это осознанно. Приём (link rel=preload с
@@ -43,49 +43,28 @@
       }
       canvas { display: block; }
 
-      /* Заставка загрузки. Уходит, когда карты в памяти, а шейдеры прогреты
-         первым кадром (см. warmUp в main.ts): станцию не показываем, пока она
-         стоит некрашеной. */
-      #loading {
-        position: fixed; inset: 0; z-index: 20;
-        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.6rem;
-        background: var(--bg);
-        font-size: 0.8rem; letter-spacing: 0.4em; text-indent: 0.4em; color: var(--dim);
-        transition: opacity 0.6s ease;
-      }
-      #loading.hidden { opacity: 0; pointer-events: none; }
-
-      /* Пока бандл не разобран, о долях ничего не известно — полоса просто
-         «дышит» на CSS-анимации, без единой строчки JS. Как только лоадеры
-         three начинают считать карты, loading.ts вешает .known и ведёт
-         ширину сам. */
-      #loadBar {
-        position: relative; overflow: hidden;
-        width: min(300px, 48vw); height: 2px;
-        background: rgba(140, 165, 205, 0.14);
-      }
-      #loadFill {
-        position: absolute; top: 0; bottom: 0; left: -34%; width: 34%;
-        background: linear-gradient(90deg, transparent, var(--accent), transparent);
-        animation: drift 1.7s ease-in-out infinite;
-      }
-      @keyframes drift { to { left: 100%; } }
-      #loadBar.known #loadFill {
-        animation: none; left: 0; width: 0;
-        background: linear-gradient(90deg, var(--accent), var(--ink));
-        transition: width 0.35s ease;
-      }
-
-      /* Вход в мир, он же пауза: один экран на оба случая — уходит по кнопке,
-         возвращается, когда курсор отпущен (Esc, потеря фокуса). */
+      /* Экран входа он же заставка он же пауза: ОДИН экран на всё.
+         Раньше их было два - заставка с полосой поверх и меню под ней, - и
+         переключение между ними читалось как щелчок. Хуже того, меню
+         открывалось только по первому кадру мира, то есть ждало сборки, а
+         нажатие до неё пропадало впустую.
+         Теперь экран входа показывается сразу, ещё до того как мир начал
+         собираться. Полоса живёт под кнопкой и тает, когда мир готов; нажать
+         можно в любой момент - нажатие подхватит boot.js и передаст миру, как
+         только тот встанет на ноги. */
       #gate {
         position: fixed; inset: 0; z-index: 10;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
         background: rgba(4, 8, 14, 0.62);
         backdrop-filter: blur(6px);
         transition: opacity 0.5s ease;
+        /* Первое появление - мягкое: витрина гаснет полсекунды, и титул мира
+           проступает ей навстречу, а не выпрыгивает готовым. */
+        animation: gate-in 0.7s ease both;
       }
-      #gate.hidden { opacity: 0; pointer-events: none; }
+      @keyframes gate-in { from { opacity: 0; } to { opacity: 1; } }
+      #gate.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+
       /* Кегль ведёт себя от ширины экрана осторожно: имя мира — одно длинное
          слово с большим трекингом, и на 360 px оно упиралось в края. */
       #gate h1 {
@@ -108,13 +87,68 @@
         cursor: pointer; transition: all 0.25s ease;
       }
       .btn:hover { background: var(--glow); border-color: var(--accent); }
+      .btn:focus-visible, .quiet:focus-visible, #exit:focus-visible, .tbtn:focus-visible {
+        outline: 2px solid var(--accent); outline-offset: 4px;
+      }
+
+      /* Нажали раньше, чем мир собрался: кнопка не отказывает, а принимает и
+         ждёт. Мир войдёт сам, как только встанет (boot.js держит намерение). */
+      .btn.waiting {
+        color: var(--dim); border-color: rgba(140, 165, 205, 0.25);
+        cursor: default; pointer-events: none;
+      }
+      .btn.waiting:hover { background: transparent; }
+
+      /* --- полоса под кнопкой ---
+         Пока мир собирается, она под кнопкой; когда собрался - тает. Прежде
+         полоса жила на отдельном экране поверх меню, и переход между экранами
+         и был тем самым рывком. */
+      #boot {
+        display: flex; flex-direction: column; align-items: center; gap: 1rem;
+        margin-top: 1.8rem; height: 2px;
+        transition: opacity 0.7s ease;
+      }
+      body.ready #boot { opacity: 0; }
+
+      /* Пока бандл не разобран, о долях ничего не известно - полоса просто
+         «дышит» на CSS-анимации, без единой строчки JS. Как только лоадеры
+         three начинают считать карты, loading.ts вешает .known и ведёт
+         ширину сам. */
+      #loadBar {
+        position: relative; overflow: hidden;
+        width: min(300px, 48vw); height: 2px;
+        background: rgba(140, 165, 205, 0.14);
+      }
+      #loadFill {
+        position: absolute; top: 0; bottom: 0; left: -34%; width: 34%;
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+        animation: drift 1.7s ease-in-out infinite;
+      }
+      @keyframes drift { to { left: 100%; } }
+      #loadBar.known #loadFill {
+        animation: none; left: 0; width: 0;
+        background: linear-gradient(90deg, var(--accent), var(--ink));
+        transition: width 0.35s ease;
+      }
+
+      /* Мир не собрался: полоса врёт о продолжении, и её не остаётся. Остаётся
+         строка и кнопка «повторить» (обе ставит boot.js). */
+      #bootMsg {
+        max-width: 22rem; text-align: center; line-height: 1.7;
+        font-size: 0.8rem; letter-spacing: 0.08em; color: var(--dim);
+      }
+      body.boot-failed #loadBar { display: none; }
+      body.boot-failed #boot { height: auto; }
+      /* Пока мир не собрался, входить некуда: кнопка входа уступает место
+         кнопке «повторить». */
+      body.boot-failed #enter { display: none; }
 
       /* Тихие ссылки под кнопкой: выход из мира и всё, что мир добавит от себя. */
       .quiet {
         margin-top: 1.8rem;
         font: inherit; font-size: 0.68rem;
         letter-spacing: 0.28em; text-indent: 0.28em; text-transform: uppercase;
-        color: var(--dim); opacity: 0.75; text-decoration: none;
+        color: var(--dim); opacity: 1; text-decoration: none;
         background: transparent; border: none; cursor: pointer;
         transition: opacity 0.25s ease, color 0.25s ease;
       }
@@ -193,27 +227,34 @@
         touch-action: none; user-select: none; -webkit-user-select: none;
         -webkit-touch-callout: none;
       }
+      @media (prefers-reduced-motion: reduce) {
+        #loadFill { animation: none; left: 0; }
+        #gate, #boot, #prompt, .tbtn, #exit { transition: none; }
+        #gate { animation: none; backdrop-filter: none; }
+      }
     </style>
   </head>
   <body>
-    <div id="loading">
-      <span>ПОДЪЁМ К СТАНЦИИ…</span>
-      <div id="loadBar"><div id="loadFill"></div></div>
-    </div>
-
     <a id="exit" href="https://find-the-end.fun/" aria-label="Выйти на витрину">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
     </a>
 
-    <div id="gate" class="hidden">
+    <!-- Экран входа виден СРАЗУ, без ожидания мира: ни class="hidden", ни inert.
+         Мир собирается за ним и проступает сквозь него по мере готовности. -->
+    <div id="gate">
       <h1>WINTERTOWER</h1>
       <p class="mood">Башня растёт вверх. Кто-то поднимался до тебя.</p>
       <button id="enter" class="btn" type="button" data-resume="продолжить">подняться</button>
+      <div id="boot" role="status" aria-live="polite">
+        <div id="loadBar" role="progressbar" aria-label="Мир собирается"><div id="loadFill"></div></div>
+        <p id="bootMsg" hidden></p>
+      </div>
       <a class="quiet" href="https://find-the-end.fun/">выйти из мира</a>
     </div>
 
     <div id="prompt"></div>
 
+    <script type="module" src="/boot.js"></script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

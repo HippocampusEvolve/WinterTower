@@ -102,7 +102,7 @@ export type Snow = ReturnType<typeof createSnow>
 /** Точка под крышей? Тучи спрашивают об этом реестр помещений (`interior.ts`). */
 export type Indoors = (x: number, y: number, z: number) => boolean
 
-export function createSnow(camera: THREE.Camera, wind: Wind, indoors?: Indoors) {
+export function createSnow(camera: THREE.Camera, wind: Wind, indoors?: Indoors, density = 1) {
   const tex = flakeTexture()
   const group = new THREE.Group()
   group.name = 'snow'
@@ -110,7 +110,7 @@ export function createSnow(camera: THREE.Camera, wind: Wind, indoors?: Indoors) 
   const layers: Layer[] = [
     makeLayer(
       {
-        count: SETTINGS.snowNear,
+        count: Math.max(1, Math.round(SETTINGS.snowNear * density)),
         half: new THREE.Vector3(14, 9, 14),
         color: PALETTE.snowLit,
         size: 1,
@@ -123,7 +123,7 @@ export function createSnow(camera: THREE.Camera, wind: Wind, indoors?: Indoors) 
     ),
     makeLayer(
       {
-        count: SETTINGS.snowFar,
+        count: Math.max(1, Math.round(SETTINGS.snowFar * density)),
         half: new THREE.Vector3(55, 26, 55),
         color: PALETTE.snowShadow,
         size: 0.5,

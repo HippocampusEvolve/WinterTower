@@ -51,6 +51,11 @@ function noiseBuffer(ctx: AudioContext, seconds = 4): AudioBuffer {
 export function createAmbient(wind: Wind) {
   let ctx: AudioContext | null = null
   let master: GainNode
+  // Громкость мира на входе: 0 — тишина, 1 — как задумано. Ведёт её
+  // пробуждение (`awaken.ts`), чтобы ветер приходил вместе с миром, а не
+  // включался за треть секунды на фоне почти трёхсекундного появления.
+  let wake = 1
+  let lastWake = 1
   let lowGain: GainNode
   let midGain: GainNode
   let whistleGain: GainNode
@@ -193,13 +198,24 @@ export function createAmbient(wind: Wind) {
     // (постоянная времени от 0.3 до 0.6 с). Пишем на порядок реже, но сразу,
     // если порыв заметно сменился или игрок переступил порог: щелчков это не
     // добавляет - плавность делает сам setTargetAtTime, а не частота вызовов.
-    if (t - lastAt < 0.1 && Math.abs(g - lastGust) < 0.02 && inside === lastInside) return
+    if (
+      t - lastAt < 0.1 &&
+      Math.abs(g - lastGust) < 0.02 &&
+      inside === lastInside &&
+      Math.abs(wake - lastWake) < 0.02
+    )
+      return
     lastAt = t
     lastGust = g
     lastInside = inside
+    lastWake = wake
 
     // setTargetAtTime, а не присваивание: ступеньки параметра дают щелчки.
-    master.gain.setTargetAtTime(muted ? 0 : SETTINGS.ambient * (1 - inside * 0.55), t, 0.3)
+    master.gain.setTargetAtTime(
+      muted ? 0 : SETTINGS.ambient * (1 - inside * 0.55) * wake,
+      t,
+      0.3,
+    )
     midFilter.frequency.setTargetAtTime((380 + g * 700) * (1 - inside * 0.7), t, 0.4)
     midGain.gain.setTargetAtTime((0.25 + g * 0.5) * (1 - inside * 0.5), t, 0.4)
     // Свист живёт только на верхушке порыва: степень 3 срезает середину.
@@ -231,6 +247,15 @@ export function createAmbient(wind: Wind) {
      */
     get bus(): { ctx: AudioContext; out: GainNode } | null {
       return ctx && ctx.state === 'running' ? { ctx, out: sfx } : null
+    },
+    /**
+     * Приглушить мир целиком на время входа: 0 — тишина, 1 — как задумано.
+     *
+     * Отдельно от `muted` (пауза) намеренно: то — состояние вкладки, это —
+     * кривая появления, и накладываются они независимо.
+     */
+    setWake(v: number) {
+      wake = v
     },
     /** Для отладки через window.wt: звук нельзя услышать из автотеста, но можно измерить. */
     get state() {

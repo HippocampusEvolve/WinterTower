@@ -91,40 +91,52 @@ export function createTouch(opts: TouchOptions) {
   ui.id = 'touchUI'
   document.body.appendChild(ui)
 
-  function make(id: string, icon: keyof typeof ICONS): HTMLButtonElement {
+  function make(id: string, icon: keyof typeof ICONS, label: string): HTMLButtonElement {
     const b = document.createElement('button')
     b.id = id
+    b.type = 'button'
     b.className = 'tbtn hide'
-    b.innerHTML = `<svg viewBox="0 0 24 24">${ICONS[icon]}</svg>`
+    b.setAttribute('aria-label', label)
+    b.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS[icon]}</svg>`
     ui.appendChild(b)
     return b
   }
 
-  const bJump = make('tbJump', 'jump')
-  const bAct = make('tbAct', 'act')
-  const bTool1 = make('tbTool1', 'shovel')
-  const bTool2 = make('tbTool2', 'build')
+  const bJump = make('tbJump', 'jump', 'Прыгнуть')
+  const bAct = make('tbAct', 'act', 'Взаимодействовать')
+  const bTool1 = make('tbTool1', 'shovel', 'Использовать инструмент')
+  const bTool2 = make('tbTool2', 'build', 'Насыпать снег')
   let shownTool: ToolKind | undefined
   let shownAction: boolean | undefined // что уже стоит в DOM у кнопки «рука»
 
-  /** Нажатие кнопки: без прохода до канваса и без синтетики мыши. */
+  /** Pointer Events плюс keyboard/switch click, без прохода до канваса. */
   function press(btn: HTMLButtonElement, fn: (down: boolean) => void) {
-    btn.addEventListener(
-      'touchstart',
-      (e) => {
-        e.preventDefault()
-        e.stopPropagation()
-        fn(true)
-      },
-      { passive: false },
-    )
+    let pressed = false
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      pressed = true
+      try { btn.setPointerCapture(e.pointerId) } catch { /* capture необязателен */ }
+      fn(true)
+    })
     const up = (e: Event) => {
       e.preventDefault()
       e.stopPropagation()
+      if (!pressed) return
+      pressed = false
       fn(false)
     }
-    btn.addEventListener('touchend', up, { passive: false })
-    btn.addEventListener('touchcancel', up, { passive: false })
+    btn.addEventListener('pointerup', up)
+    btn.addEventListener('pointercancel', up)
+    btn.addEventListener('lostpointercapture', up)
+    btn.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.detail === 0) {
+        fn(true)
+        fn(false)
+      }
+    })
   }
 
   // Прыжок держим фактом нажатия: фронт ловит сам контроллер (jumpHeld).
@@ -270,6 +282,7 @@ export function createTouch(opts: TouchOptions) {
       bTool1.classList.toggle('hide', !tool)
       bTool2.classList.toggle('hide', tool !== 'shovel')
       if (tool) bTool1.querySelector('svg')!.innerHTML = ICONS[tool]
+      bTool1.setAttribute('aria-label', tool === 'axe' ? 'Рубить топором' : 'Копать лопатой')
     },
   }
 }

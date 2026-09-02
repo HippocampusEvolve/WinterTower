@@ -40,14 +40,16 @@
  *    вход в мир на канале 8 Мбит/с сократился с 13 до 8 секунд, а заставка
  *    загрузки перестала уходить по аварийному таймеру, не дождавшись карт.
  *
- *    Потолки: normal и color — 1024, rough и metal — 512. Взяты не на глаз:
+ *    Потолки: normal и color обычно 1024, rough и metal 512. Для дерева,
+ *    ткани и ржавчины normal тоже 512: на их физическом масштабе и сквозь
+ *    туман разницы в кадре нет, а загрузка короче больше чем на мегабайт.
  *    зерно задано в метрах, и карта 2048 при `meters` 2.4 давала 853 текселя
  *    на метр — на порядок больше, чем способен показать экран сквозь туман
  *    на сорока метрах. Кадр до и после неотличим, а `snow/rough` при этом
  *    ужалась с 1169 КБ до 14: карта почти ровная, и всё её содержимое было
  *    шумом разрешения.
  *
- *    Суффикс в имени (`normal_1k`, `rough_512`) — не украшение. Nginx отдаёт
+ *    Суффикс в имени (`normal_512`, `rough_512`) — не украшение. Nginx отдаёт
  *    текстуры с годовым `immutable`, поэтому под прежним именем вернувшийся
  *    игрок год видел бы старую версию. Меняешь содержимое — меняй имя.
  *    Исходники лежат в `textures-unused/orig/` — новую карту прогонять тем же
@@ -81,6 +83,39 @@ const files = new Map<string, THREE.Texture>()
 const pending = new Map<string, THREE.Texture[]>()
 
 /**
+ * Заливка пришедшей карты в видеопамять — сразу, а не первым кадром, который
+ * её увидит.
+ *
+ * Заставка теперь уходит по первому кадру, а не по последней карте (main.ts):
+ * мир открывается плоскими цветами палитры и одевается уже на глазах. Загрузка
+ * от этого короче, но заливка каждой карты в GPU переехала из одного общего
+ * прогрева в случайный кадр посреди игры — а это и есть тот подтормоз, ради
+ * устранения которого прогрев вообще заведён.
+ *
+ * Поэтому карту заливаем в тот же миг, когда её принёс декодер: `initTexture`
+ * делает загрузку в GPU здесь, вне отрисовки. Клоны делят с оригиналом
+ * `source`, а рендерер кэширует заливку по нему — значит одна заливка на файл
+ * закрывает все материалы, которые эту карту взяли.
+ *
+ * Рендерер модулю материалов взять неоткуда, поэтому его подкладывает `main.ts`
+ * вызовом `uploadMapsWith`. Карты, успевшие приехать раньше подписки, ждут в
+ * `arrived` — на быстром канале и горячем кэше это обычное дело.
+ */
+let upload: ((tex: THREE.Texture) => void) | null = null
+const arrived: THREE.Texture[] = []
+
+function ready(tex: THREE.Texture): void {
+  if (upload) upload(tex)
+  else arrived.push(tex)
+}
+
+/** Кто заливает карты в видеопамять. Зовётся из `main.ts` с рендерером. */
+export function uploadMapsWith(fn: (tex: THREE.Texture) => void): void {
+  upload = fn
+  for (const t of arrived.splice(0)) fn(t)
+}
+
+/**
  * Один канал карты. `srgb` — только для цвета; нормали и шероховатость линейные.
  *
  * Проверка на DOM — не паранойя: `npm run measure` собирает НАСТОЯЩИЕ модули
@@ -96,11 +131,12 @@ function map(path: string, meters: number, srgb: boolean): THREE.Texture {
   if (!base) {
     const waiting: THREE.Texture[] = []
     pending.set(path, waiting)
-    base = loader.load(path, () => {
+    base = loader.load(path, (tex) => {
       // Картинка пришла — клоны об этом сами не узнают: `TextureLoader` метит
       // только ту текстуру, которую вернул из `load`.
       for (const t of waiting) t.needsUpdate = true
       pending.delete(path)
+      ready(tex)
     })
     base.wrapS = base.wrapT = THREE.RepeatWrapping
     if (srgb) base.colorSpace = THREE.SRGBColorSpace
@@ -210,6 +246,7 @@ function pbr(
   const { meters = 3, hasMetal = false, colorGain, ...rest } = o
   const m = std(rest)
   const base = `textures/${name}/`
+  const normalSize = name === 'wood' || name === 'cloth' || name === 'rust' ? '512' : '1k'
   if (colorGain) {
     m.map = map(base + 'color_1k.webp', meters, true)
     // Компенсация среднего: карта в среднем даёт `1/colorGain`, множитель
@@ -219,7 +256,7 @@ function pbr(
   }
   // Размер в имени: см. правило 4 в шапке файла. Под прежним именем карта
   // не доехала бы до вернувшегося игрока — nginx отдаёт их с годовым immutable.
-  m.normalMap = map(base + 'normal_1k.webp', meters, false)
+  m.normalMap = map(base + `normal_${normalSize}.webp`, meters, false)
   m.roughnessMap = map(base + 'rough_512.webp', meters, false)
   if (hasMetal) m.metalnessMap = map(base + 'metal_512.webp', meters, false)
   // Нормаль скачанного бетона рассчитана на плоскую стену в упор. В тумане

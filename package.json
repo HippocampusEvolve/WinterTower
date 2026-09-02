@@ -8,8 +8,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "measure": "rolldown tools/measure.ts -f esm -d node_modules/.wt --platform node --silent && node node_modules/.wt/measure.js",
-    "room": "rolldown tools/room.ts -f esm -d node_modules/.wt --platform node --silent && node node_modules/.wt/room.js"
+    "measure": "rolldown tools/measure.ts -f esm -d node_modules/.wt --platform node && node node_modules/.wt/measure.js",
+    "room": "rolldown tools/room.ts -f esm -d node_modules/.wt --platform node && node node_modules/.wt/room.js",
+    "octree": "rolldown tools/octree.ts -f esm -d node_modules/.wt --platform node && node node_modules/.wt/octree.js"
   },
   "dependencies": {
     "postprocessing": "^6.39.3",

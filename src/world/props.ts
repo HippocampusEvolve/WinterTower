@@ -435,7 +435,9 @@ export function buildProps(): {
       const z = -9.6
       const base = g(z)
       rust.pipe(0.29, 0.88, wx + 0.1, base, z, 12)
-      metal.pipe(0.31, 0.05, wx + 0.1, base + 0.82, z, 12)
+      // Верхний обод выступает над крышкой бочки: прежние верхние грани
+      // расходились ровно на 1 см и спорили в глубинном буфере.
+      metal.pipe(0.31, 0.05, wx + 0.1, base + 0.845, z, 12)
       metal.pipe(0.31, 0.05, wx + 0.1, base + 0.4, z, 12)
     }
 

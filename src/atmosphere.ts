@@ -198,6 +198,7 @@ export const SETTINGS = {
 export const NO_NORMALS_LAYER = 1
 
 export type Atmosphere = ReturnType<typeof createAtmosphere>
+export type RenderQuality = 'high' | 'medium' | 'low'
 
 /**
  * Экспозиция одним умножением.
@@ -257,6 +258,7 @@ export function createAtmosphere(
   scene: THREE.Scene,
   camera: THREE.PerspectiveCamera,
   renderer: THREE.WebGLRenderer,
+  quality: RenderQuality = 'high',
 ) {
   // --- Туман и фон ---------------------------------------------------------
   // Фон = цвет тумана, поэтому горизонта не существует: всё уходит в молоко.
@@ -301,25 +303,22 @@ export function createAtmosphere(
   // Нормали сцены отдельным проходом — их читает SSAO. Проход стоит сразу за
   // рендером и ДО любого эффекта: он рисует сцену повторно и обязан видеть тот
   // же буфер глубины, что и основной проход.
-  const normalPass = new NormalPass(scene, camera)
-  // Снег и ореолы из буфера нормалей исключаются: см. NO_NORMALS_LAYER.
-  // Слой гасится на камере только на время этого прохода — своей камеры
-  // у NormalPass нет, он рисует той же.
-  camera.layers.enable(NO_NORMALS_LAYER)
-  const renderNormals = normalPass.render.bind(normalPass)
-  normalPass.render = (...args: Parameters<typeof renderNormals>) => {
-    camera.layers.disable(NO_NORMALS_LAYER)
-    renderNormals(...args)
+  let ssao: SSAOEffect | null = null
+  if (quality !== 'low') {
+    const normalPass = new NormalPass(scene, camera)
+    // Снег и ореолы из буфера нормалей исключаются: см. NO_NORMALS_LAYER.
     camera.layers.enable(NO_NORMALS_LAYER)
-  }
-  composer.addPass(normalPass)
-
-  composer.addPass(new EffectPass(camera, new SMAAEffect()))
-
-  const ssao = new SSAOEffect(camera, normalPass.texture, {
+    const renderNormals = normalPass.render.bind(normalPass)
+    normalPass.render = (...args: Parameters<typeof renderNormals>) => {
+      camera.layers.disable(NO_NORMALS_LAYER)
+      renderNormals(...args)
+      camera.layers.enable(NO_NORMALS_LAYER)
+    }
+    composer.addPass(normalPass)
+    ssao = new SSAOEffect(camera, normalPass.texture, {
     blendFunction: BlendFunction.MULTIPLY,
-    samples: 16,
-    rings: 7,
+    samples: quality === 'high' ? 16 : 8,
+    rings: quality === 'high' ? 7 : 4,
     radius: SETTINGS.ssaoRadius,
     intensity: SETTINGS.ssao,
     // Затенение уходит в синеву, а не в чёрное. Это не украшательство:
@@ -346,7 +345,10 @@ export function createAtmosphere(
     luminanceInfluence: 0.05,
     bias: 0.03,
     fade: 0.02,
-  })
+    })
+  }
+
+  composer.addPass(new EffectPass(camera, new SMAAEffect()))
 
   const bloom = new BloomEffect({
     intensity: SETTINGS.bloom,
@@ -370,7 +372,9 @@ export function createAtmosphere(
   // грейдинг и виньетка идут уже по картинке после ACES. SSAO — первым:
   // он часть освещения, а не грейдинга, и блум обязан видеть уже затенённые углы.
   composer.addPass(
-    new EffectPass(camera, ssao, bloom, exposure, tone, hueSat, briCon, vignette, noise),
+    ssao
+      ? new EffectPass(camera, ssao, bloom, exposure, tone, hueSat, briCon, vignette, noise)
+      : new EffectPass(camera, bloom, exposure, tone, hueSat, briCon, vignette, noise),
   )
 
   // Подписчики на apply(): снег, ореолы и звук живут вне этого файла, но читают
@@ -393,11 +397,13 @@ export function createAtmosphere(
 
     bloom.intensity = SETTINGS.bloom
     bloom.luminanceMaterial.threshold = SETTINGS.bloomThreshold
-    ssao.intensity = SETTINGS.ssao
-    ssao.radius = SETTINGS.ssaoRadius
+    if (ssao) {
+      ssao.intensity = SETTINGS.ssao
+      ssao.radius = SETTINGS.ssaoRadius
     // Дальность живёт на материале эффекта, а не на самом эффекте: у SSAOEffect
     // её принимает только конструктор.
-    ssao.ssaoMaterial.worldDistanceThreshold = SETTINGS.ssaoDistance
+      ssao.ssaoMaterial.worldDistanceThreshold = SETTINGS.ssaoDistance
+    }
     hueSat.saturation = SETTINGS.saturation
     briCon.brightness = SETTINGS.brightness
     briCon.contrast = SETTINGS.contrast
@@ -422,5 +428,36 @@ export function createAtmosphere(
     fn()
   }
 
-  return { composer, apply, onApply, sun, sky, fog }
+  // Цвет пелены на входе в мир. Штатный туман светлый (это дневная дымка), и
+  // одной плотности мало: сгущая её, получаешь не темноту, а ярко-голубую
+  // заливку во весь кадр. Поэтому вход ведёт туман к почти чёрному — тогда
+  // мир и правда проступает ИЗ ТЕМНОТЫ, а не из синьки.
+  const fogNight = new THREE.Color(0x05070b)
+  const fogDay = new THREE.Color(SETTINGS.fogColor)
+
+  /**
+   * Пелена входа: плотность в разах от штатной и глубина затемнения 0..1.
+   *
+   * Живёт отдельно от `apply()` по той же причине, что и `setLight`: это
+   * временное состояние входа (`awaken.ts`), а не настройка мира.
+   */
+  function setVeil(densityTimes: number, darkness: number) {
+    fog.density = SETTINGS.fogDensity * densityTimes
+    fog.color.copy(fogDay).lerp(fogNight, darkness)
+    ;(scene.background as THREE.Color).copy(fog.color)
+  }
+
+  /**
+   * Приглушить кадр целиком: 1 — как задумано в SETTINGS, 0 — черно.
+   *
+   * Отдельно от `apply()` намеренно. `apply` прогоняет ВЕСЬ набор настроек и
+   * зовётся при правке атмосферы, а это — временный множитель на вход в мир
+   * (`awaken.ts`), который живёт своей жизнью и не должен ни попадать в
+   * SETTINGS, ни сбрасываться вместе с ними.
+   */
+  function setLight(multiplier: number) {
+    exposure.exposure = SETTINGS.exposure * multiplier
+  }
+
+  return { composer, apply, onApply, setLight, setVeil, sun, sky, fog }
 }

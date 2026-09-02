@@ -113,7 +113,9 @@ export function buildLake(): { ice: THREE.Mesh; props: THREE.Group } {
     if (heightAt(x, z) > LAKE.y + 0.05) continue // на берег вешки не ставим
     const h = 1.1 + rand() * 0.5
     trim.pipe(0.05, h, x, y, z, 5)
-    snow.box(0.5, 0.1, 0.5, x, y + 0.05, z, rand() * 3)
+    // Нижняя грань наноса не совпадает с подошвой вешки на льду. Небольшой
+    // нахлёст остаётся внутри снега, видимая верхняя поверхность не меняется.
+    snow.box(0.5, 0.1, 0.5, x, y + 0.062, z, rand() * 3)
   }
 
   group.add(hull.mesh(MAT.boat, 'boat-hull'))

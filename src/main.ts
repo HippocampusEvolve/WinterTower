@@ -12,12 +12,17 @@ import './asset'
 
 // Заставка загрузки идёт первой строкой не для красоты: она подписывается на
 // счётчик лоадеров, а карты запрашиваются уже при разборе `world/materials.ts`.
-import { whenLoaded, probe } from './loading'
+import './loading'
+
+// Вехи загрузки уходят в трассу boot.js: измерять её надо числами, а не
+// секундомером у экрана (`__FTE_BOOT__.trace()` в консоли, в том числе на проде).
+const mark = (name: string): void =>
+  (window as Window & { __FTE_BOOT__?: { mark(n: string): void } }).__FTE_BOOT__?.mark(name)
 
 import * as THREE from 'three'
-import { Octree } from 'three/examples/jsm/math/Octree.js'
 
 import { createShell } from './shell'
+import { keepOffline } from './offline'
 import { createAtmosphere } from './atmosphere'
 import { createLook } from './look'
 import { createPlayer } from './player'
@@ -28,11 +33,34 @@ import { createSnow } from './snow'
 import { createHaze } from './haze'
 import { createAmbient } from './ambient'
 import { buildWorld } from './world'
+import { buildCollision } from './world/collision'
+import { createAwakening } from './awaken'
+import { uploadMapsWith } from './world/materials'
 import { heightAt } from './world/terrain'
 
 // --- Рендерер ---------------------------------------------------------------
+type QualityName = 'high' | 'medium' | 'low'
+const params = new URLSearchParams(location.search)
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
+const device = navigator as Navigator & { deviceMemory?: number }
+const requestedQuality = params.get('quality')
+const autoQuality: QualityName =
+  reducedMotion || (device.deviceMemory ?? 4) <= 2 || (navigator.hardwareConcurrency || 4) <= 2
+    ? 'low'
+    : matchMedia('(pointer: coarse)').matches ||
+        (device.deviceMemory ?? 4) <= 4 ||
+        (navigator.hardwareConcurrency || 4) <= 4 ||
+        devicePixelRatio > 1.75
+      ? 'medium'
+      : 'high'
+const qualityName: QualityName =
+  requestedQuality === 'high' || requestedQuality === 'medium' || requestedQuality === 'low'
+    ? requestedQuality
+    : autoQuality
+const qualityDpr = { high: 1.75, medium: 1.35, low: 1 }[qualityName]
+
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
+renderer.setPixelRatio(Math.min(devicePixelRatio, qualityDpr))
 renderer.setSize(innerWidth, innerHeight)
 document.body.appendChild(renderer.domElement)
 
@@ -41,20 +69,36 @@ const scene = new THREE.Scene()
 // FOV 62° и небольшой наклон вниз — примерно как на референсном кадре
 const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 500)
 
-const atmosphere = createAtmosphere(scene, camera, renderer)
+const atmosphere = createAtmosphere(scene, camera, renderer, qualityName)
 
 // --- Мир --------------------------------------------------------------------
 const t0 = performance.now()
 const world = buildWorld()
 scene.add(world.terrain, world.solid, world.glows.group)
 
-const t1 = performance.now()
+const tWorld = performance.now() - t0
+
 // В дерево идут только постройки: рельеф считается формулой heightAt.
-const octree = new Octree().fromGraphNode(world.solid)
-console.log(
-  `[wintertower] мир собран за ${(t1 - t0).toFixed(0)} мс, octree за ${(performance.now() - t1).toFixed(0)} мс, ` +
-    `тёплых источников: ${world.warmCount}`,
-)
+//
+// Строится оно НЕ здесь и не разом. Раньше в этой строке стояло
+// `new Octree().fromGraphNode(world.solid)`, и она одна занимала полторы
+// секунды — втрое больше, чем сборка всего мира. Полторы секунды главный
+// поток был занят: кадр не рисовался, ответы сети не разбирались, и три
+// мегабайта карт стояли в очереди, хотя запрошены были давно. По замеру входа
+// первая карта уходила в дело только на 2219-й миллисекунде.
+//
+// Теперь дерево собирается порциями между кадрами (`world/collision.ts`), и
+// то же самое время идёт фоном, пока мир уже виден, а карты уже едут. Дерево
+// получается ровно то же — это проверено счётом, `npm run octree`.
+const collision = buildCollision(world.solid, () => {
+  mark('дерево коллизий')
+  console.log(
+    `[wintertower] дерево коллизий готово на ${performance.now().toFixed(0)} мс от старта`,
+  )
+})
+const octree = collision.octree
+mark('мир собран')
+console.log(`[wintertower] мир собран за ${tWorld.toFixed(0)} мс, тёплых источников: ${world.warmCount}`)
 
 // Взгляд владеет ориентацией камеры, контроллер — телом. Разделение нужно
 // физике: ей требуется чистое направление, без кренов и клевков (см. look.ts).
@@ -76,7 +120,7 @@ const player = createPlayer(camera, look, octree, heightAt, world.spawn, world.y
 // Ветер один на всех: по нему летит снег и по нему же дышит шум эмбиента.
 const wind = createWind()
 // Тучам нужна крыша: под крышей хлопья переставляются наружу (snow.ts).
-const snow = createSnow(camera, wind, world.indoors)
+const snow = createSnow(camera, wind, world.indoors, { high: 1, medium: 0.7, low: 0.4 }[qualityName])
 scene.add(snow.group)
 
 // Клубы: неоднородность тумана. Идут отдельной группой, не в `solid`, —
@@ -106,6 +150,22 @@ hands = createHands({
   getAudioBus: () => ambient.bus,
   spawn: world.spawn,
   spawnYaw: world.yaw,
+})
+
+// --- Пробуждение --------------------------------------------------------------
+// Вход в мир идёт не переключателем, а появлением: мир проступает из темноты
+// сквозь пелену, а по нажатию она отходит вглубь и опущенный взгляд поднимается
+// к башне. Модуль владеет на это время туманом, светом и камерой — см.
+// awaken.ts, там же про то, почему длительность не зависит от загрузки.
+const awakening = createAwakening({
+  setVeil: atmosphere.setVeil,
+  setLight: atmosphere.setLight,
+  look,
+  yaw: world.yaw,
+  setSound: (level) => ambient.setWake(level),
+  // Пустить в мир можно только по готовому дереву коллизий: без него первый же
+  // шаг с террасы уронил бы игрока сквозь лестницу.
+  ready: () => collision.ready(),
 })
 
 // --- Управление пальцем -------------------------------------------------------
@@ -154,6 +214,7 @@ Object.assign(window, {
     hands,
     atmosphere,
     octree,
+    collision,
     renderer,
     touch,
     heightAt,
@@ -170,7 +231,15 @@ Object.assign(window, {
 // Вход, пауза и выход на витрину — общий для всех миров экран (shell.ts).
 // Esc браузер обрабатывает сам: он отпускает курсор, а по этому событию
 // возвращается экран паузы.
-const shell = createShell((ev) => {
+function enterWorld(ev: Event): void {
+  // Дерево коллизий собирается фоном, и войти в мир раньше, чем оно готово,
+  // нельзя: без него постройки для игрока не существуют. Доделывать остаток
+  // разом (`collision.finish()`) здесь больше не нужно и не годится — это был
+  // фриз ровно в тот момент, когда человек ждёт мира. Теперь ожидание
+  // накрыто пробуждением: пелена держится, пока дерево не собрано, и всё это
+  // время игрок смотрит, как отходит туман, а не в застывший кадр.
+  awakening.enter()
+
   ambient.start() // до жеста пользователя браузер звук не заводит
   // Чем вошли, тем и играем. Раньше выбор шёл по факту «тач вообще возможен»,
   // а `'ontouchstart' in window` истинно на любом ноутбуке с сенсорным
@@ -190,11 +259,36 @@ const shell = createShell((ev) => {
     touch.activate()
     shell.close()
   } else {
-    // Отказ не роняем: браузер держит защитную паузу около секунды после
-    // выхода по Esc. Экран входа остаётся открытым и ждёт второго нажатия.
-    renderer.domElement.requestPointerLock()?.catch?.(() => {})
+    // Захват курсора могут и не дать, и это не сбой: браузер отдаёт его только
+    // по свежему жесту, а нажатие, пришедшее раньше готовности мира, до него
+    // доживает не всегда. Отменять из-за этого вход нельзя, иначе вернётся
+    // ровно то, на что жаловались: нажал, а ничего не случилось. Поэтому вход
+    // идёт всё равно, а курсор перехватывается первым же движением мыши.
+    const lock = renderer.domElement.requestPointerLock() as unknown
+    if (lock instanceof Promise) lock.catch(() => softEnter())
   }
+}
+
+// Вход без захвата курсора: мир открыт и просыпается, а курсор возьмём на
+// первом же нажатии внутри мира.
+let awaitingLock = false
+
+function softEnter(): void {
+  if (!shell.isOpen()) return
+  awaitingLock = true
+  shell.close()
+}
+
+document.addEventListener('pointerlockerror', softEnter)
+
+addEventListener('pointerdown', () => {
+  if (!awaitingLock || document.pointerLockElement || shell.isOpen()) return
+  awaitingLock = false
+  renderer.domElement.requestPointerLock()
 })
+
+const shell = createShell({ onEnter: enterWorld })
+
 document.addEventListener('pointerlockchange', () => {
   // Смотрим на фактическую активацию, а не на существование слоя: тач создан
   // и на ноутбуке с сенсорным экраном, но играют там мышью, и пауза по Esc
@@ -205,19 +299,33 @@ document.addEventListener('pointerlockchange', () => {
 })
 
 // --- Заставка загрузки ------------------------------------------------------
-// Мир собирается кодом и стоит на месте мгновенно, но НЕКРАШЕНЫМ: карты
-// доезжают асинхронно, и без заставки игрок первые секунды смотрит на плоские
-// цвета палитры, поверх которых прямо у него на глазах проявляется бетон.
+// Заставка уходит по ПЕРВОМУ КАДРУ, а не по загруженным картам, и это главное
+// решение всей загрузки мира.
 //
-// Уходит заставка не по загрузке карт, а на кадр позже — после прогрева.
-// Прогрев делается НАСТОЯЩИМ кадром, и `renderer.compile()` тут не годится:
-// он собирает программы под канвас, а мир рисуется композером в рендер-таргет
-// (другое цветовое пространство, а значит другой ключ программы). При первом
-// же повороте головы всё за пределами стартового ракурса компилировалось бы
-// заново, вместе с заливкой текстур в GPU, — то есть фризом на ровном месте.
-// Поэтому: гасим frustum culling у ВСЕЙ сцены, рисуем один кадр под заставкой
-// и culling сразу возвращаем.
-const loadingEl = document.getElementById('loading')!
+// Раньше здесь стояло `whenLoaded(warmUp)`: экран держался, пока не приедут
+// все карты, — три мегабайта, пятнадцать секунд на 1.5 Мбит/с. Смысл был
+// косметический: мир собирается кодом и стоит на месте мгновенно, но
+// НЕКРАШЕНЫМ, и не хотелось показывать, как поверх плоского цвета палитры
+// проявляется бетон. Цена этой косметики — пятнадцать секунд перед чёрным
+// экраном с полосой, и платил её каждый пришедший.
+//
+// Теперь порядок обратный: кадр рисуется сразу, экран входа зовёт внутрь через
+// секунду, а мир одевается за спиной, пока игрок читает титул. Карта, приехав,
+// заливается в видеопамять тут же (`uploadMapsWith` ниже) — иначе заливка
+// каждой из двух с половиной десятков карт легла бы на случайный игровой кадр.
+//
+// Прогрев остаётся и делается НАСТОЯЩИМ кадром: `renderer.compile()` тут не
+// годится, он собирает программы под канвас, а мир рисуется композером в
+// рендер-таргет (другое цветовое пространство, а значит другой ключ
+// программы). При первом же повороте головы всё за пределами стартового
+// ракурса компилировалось бы заново — фриз на ровном месте. Поэтому: гасим
+// frustum culling у ВСЕЙ сцены, рисуем один кадр под заставкой и culling сразу
+// возвращаем.
+//
+// Прогреву картинки карт не нужны вовсе: ключ шейдерной программы зависит от
+// того, ЕСТЬ ли у материала карта, а не от того, что на ней нарисовано. Карты
+// уже присвоены материалам (пустые, version=0), поэтому программы собираются
+// те же самые, что и с готовыми картинками.
 let warmed = false
 
 function warmUp() {
@@ -234,13 +342,22 @@ function warmUp() {
     if (hands) hands.renderWorld(renderer, () => atmosphere.composer.render())
     else atmosphere.composer.render()
     for (const o of culled) o.frustumCulled = true
-    loadingEl.classList.add('hidden')
-    shell.open() // мир готов — можно звать внутрь
+    mark('первый кадр')
+    awakening.reveal() // мир начинает проступать из темноты
+    // Экран входа уже открыт — мир лишь забирает его себе. Вместе с ним
+    // приходит то, что нажали, пока он собирался: это нажатие и есть вход,
+    // просто сделанный раньше, чем мир успел ответить.
+    const pressed = shell.ready()
+    if (pressed.enter) enterWorld(pressed.enter)
+    startLoop()
+    keepOffline() // следующий приход в мир — без сети (offline.ts)
   })
 }
 
-whenLoaded(warmUp)
-probe() // на случай, если грузить нечего вовсе — см. loading.ts
+// Карты заливаются в видеопамять по мере прихода, вне отрисовки.
+uploadMapsWith((tex) => renderer.initTexture(tex))
+
+warmUp()
 
 // --- Ресайз -----------------------------------------------------------------
 addEventListener('resize', () => {
@@ -254,6 +371,8 @@ addEventListener('resize', () => {
 // --- Цикл -------------------------------------------------------------------
 // В three r185 Timer живёт в ядре, а не в examples/jsm. Clock объявлен устаревшим.
 const timer = new THREE.Timer()
+let loopStarted = false
+let lastFrameAt = 0
 
 // Отрисовка мира одной ссылкой: замыкание внутри кадра создавало бы новую
 // функцию шестьдесят раз в секунду впустую.
@@ -263,16 +382,39 @@ const drawWorld = () => atmosphere.composer.render()
 // тач читает (см. hands.buttons).
 const buttonState: TouchButtons = { action: false, tool: null }
 
-renderer.setAnimationLoop(() => {
+function startLoop() {
+  if (loopStarted) return
+  loopStarted = true
+  renderer.setAnimationLoop(frame)
+}
+
+function frame(frameAt: number) {
+  // На паузе мир рисуется вдесятеро реже: за экраном входа он всё равно почти
+  // не меняется, а батарею беречь стоит. Исключение — пробуждение: пелена
+  // отходит и взгляд поднимается ИМЕННО на этом экране, и десять кадров в
+  // секунду превратили бы плавное появление в дёрганое.
+  if (
+    document.body.classList.contains('paused') &&
+    !awakening.holds() &&
+    frameAt - lastFrameAt < 100
+  )
+    return
+  lastFrameAt = frameAt
   timer.update()
 
   // потолок на dt: после свёрнутой вкладки не должно телепортировать сквозь стены
   const dt = Math.min(timer.getDelta(), 0.05)
-  // Взгляд — ДО физики: идти игрок должен по свежему направлению, а не по
-  // прошлокадровому (иначе на быстром развороте движение отстаёт на кадр).
-  look.update(dt, player)
-  player.update(dt)
-  hands?.update(dt, player)
+  // Пока идёт пробуждение, игрок не управляет ничем: камерой ведёт awaken.ts,
+  // а физику звать нельзя вовсе — дерево коллизий может быть ещё не собрано.
+  // Мир вокруг при этом живёт: снег летит, ветер дышит, туман отходит.
+  awakening.update(dt)
+  if (!awakening.holds()) {
+    // Взгляд — ДО физики: идти игрок должен по свежему направлению, а не по
+    // прошлокадровому (иначе на быстром развороте движение отстаёт на кадр).
+    look.update(dt, player)
+    player.update(dt)
+    hands?.update(dt, player)
+  }
   // Кнопка «рука» появляется, только когда ею есть что сделать, а кнопки
   // инструмента - когда он в руках. Подсказка вещью, а не текстом.
   if (touch?.active && hands) {
@@ -289,4 +431,4 @@ renderer.setAnimationLoop(() => {
   // и снимают сразу после, а сами идут отдельным проходом поверх.
   if (hands) hands.renderWorld(renderer, drawWorld)
   else atmosphere.composer.render()
-})
+}
