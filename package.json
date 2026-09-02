@@ -14,7 +14,8 @@
   },
   "dependencies": {
     "postprocessing": "^6.39.3",
-    "three": "^0.185.1"
+    "three": "^0.185.1",
+    "world-core": "github:HippocampusEvolve/world-core"
   },
   "devDependencies": {
     "@types/three": "^0.185.1",

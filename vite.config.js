@@ -218,6 +218,10 @@ export function precompress() {
 // то есть считаются от адреса страницы и переезжают вместе с ней сами.
 export default defineConfig(({ command, isPreview }) => ({
   base: command === 'build' || isPreview ? '/wintertower/' : '/',
+  // У ядра (world-core) свой three в devDependencies, и без этой строки в
+  // сборку могут попасть две копии движка: у мира и у контроллера окажутся
+  // разные классы Vector3, а `instanceof` между ними ложен.
+  resolve: { dedupe: ['three'] },
   build: {
     rollupOptions: {
       output: {
