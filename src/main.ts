@@ -95,11 +95,14 @@ const tWorld = performance.now() - t0
 // Теперь дерево собирается порциями между кадрами (`world/collision.ts`), и
 // то же самое время идёт фоном, пока мир уже виден, а карты уже едут. Дерево
 // получается ровно то же — это проверено счётом, `npm run octree`.
+let treeReady = false
 const collision = buildCollision(world.solid, () => {
+  treeReady = true
   mark('дерево коллизий')
   console.log(
     `[wintertower] дерево коллизий готово на ${performance.now().toFixed(0)} мс от старта`,
   )
+  tryUnveil()
 })
 const octree = collision.octree
 mark('мир собран')
@@ -320,6 +323,10 @@ Object.assign(window, {
 // Esc браузер обрабатывает сам: он отпускает курсор, а по этому событию
 // возвращается экран паузы.
 function enterWorld(ev: Event): void {
+  // Вход - это конец ожидания: за туманом игрока оставлять нельзя. Если мир
+  // успел собраться сам, здесь пусто. Дерево коллизий при этом всё равно
+  // держит пелена самого пробуждения (`awakening`), а не туман меню.
+  unveilWorld()
   // Дерево коллизий собирается фоном, и войти в мир раньше, чем оно готово,
   // нельзя: без него постройки для игрока не существуют. Доделывать остаток
   // разом (`collision.finish()`) здесь больше не нужно и не годится — это был
@@ -414,33 +421,113 @@ document.addEventListener('pointerlockchange', () => {
 // того, ЕСТЬ ли у материала карта, а не от того, что на ней нарисовано. Карты
 // уже присвоены материалам (пустые, version=0), поэтому программы собираются
 // те же самые, что и с готовыми картинками.
+//
+// И ещё одно, замеренное трассой (03.09.2026): прогрев ОДНИМ кадром с
+// погашенным culling'ом занимал 985 мс — столько стояло между вехами «мир
+// собран» и «первый кадр». Целую секунду главный поток компилировал программы
+// и заливал буферы, и всё это время экран входа не отвечал на нажатие.
+// Поэтому прогрев здесь разбит на две части:
+//
+//   1. ПЕРВЫЙ КАДР — обычный, с живым culling'ом: компилируется только то, что
+//      видно из точки входа. Он дёшев, и после него мир можно показывать.
+//   2. ОСТАЛЬНАЯ СЦЕНА — порциями по кадрам, с бюджетом на порцию: рисуем
+//      столько объектов, сколько влезает, и отдаём кадр браузеру. Размер
+//      порции подбирается сам по предыдущей. Идёт под сплошным туманом, но
+//      при живом меню — то есть время то же, а кнопка отвечает.
+//
+// Тот же приём, что `warmSceneSpread` в Snowfall.
+const WARM_BUDGET_MS = 12
+
+function drawWarm(): void {
+  if (hands) hands.renderWorld(renderer, () => atmosphere.composer.render())
+  else atmosphere.composer.render()
+}
+
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()))
+}
+
 let warmed = false
+
+async function warmSpread(): Promise<void> {
+  const pend: THREE.Object3D[] = []
+  scene.traverse((o) => {
+    // Только то, что рисуется: группы и пустышки прогревать нечем, а порции
+    // из них состояли бы наполовину.
+    const drawable = o as THREE.Object3D & { isMesh?: boolean; isPoints?: boolean; isLine?: boolean }
+    if ((drawable.isMesh || drawable.isPoints || drawable.isLine) && o.frustumCulled) pend.push(o)
+  })
+  mark('прогрев начат')
+  let size = 4
+  for (let i = 0; i < pend.length; ) {
+    const part = pend.slice(i, i + size)
+    i += part.length
+    for (const o of part) o.frustumCulled = false
+    const t = performance.now()
+    drawWarm()
+    // Дождаться, пока нарисованное действительно нарисуется. Без этого замер
+    // врёт в худшую сторону: команды GL уходят в очередь и возвращают
+    // управление сразу, компиляция программ идёт лениво, `spent` выходит в
+    // единицы миллисекунд - и порция растёт до потолка, а весь отложенный
+    // счёт приходит потом одним куском. `finish` делает цену порции честной.
+    renderer.getContext().finish()
+    const spent = performance.now() - t
+    for (const o of part) o.frustumCulled = true
+    // Порция растёт, пока кадр укладывается в бюджет, и сжимается, если нет.
+    size = spent > WARM_BUDGET_MS ? Math.max(1, size >> 1) : Math.min(32, size + 2)
+    await nextFrame()
+  }
+  mark(`прогрев кончен (${pend.length} объектов)`)
+}
 
 function warmUp() {
   if (warmed) return
   warmed = true
   requestAnimationFrame(() => {
-    const culled: THREE.Object3D[] = []
-    scene.traverse((o) => {
-      if (o.frustumCulled) {
-        culled.push(o)
-        o.frustumCulled = false
-      }
-    })
-    if (hands) hands.renderWorld(renderer, () => atmosphere.composer.render())
-    else atmosphere.composer.render()
-    for (const o of culled) o.frustumCulled = true
+    // Первый кадр — обычный: он показывает мир, а не компилирует его целиком.
+    drawWarm()
     mark('первый кадр')
-    awakening.reveal() // мир начинает проступать из темноты
     // Экран входа уже открыт — мир лишь забирает его себе. Вместе с ним
     // приходит то, что нажали, пока он собирался: это нажатие и есть вход,
     // просто сделанный раньше, чем мир успел ответить.
+    //
+    // Туман при этом НЕ снимается: дерево коллизий может быть ещё не собрано,
+    // а сцена — не прогрета. Его снимет `tryUnveil`, когда сойдётся всё.
     const pressed = shell.ready()
     if (pressed.enter) enterWorld(pressed.enter)
     startLoop()
     keepOffline() // следующий приход в мир — без сети (offline.ts)
+    void warmSpread().then(() => {
+      warmDone = true
+      tryUnveil()
+    })
   })
 }
+
+// --- Туман экрана входа -----------------------------------------------------
+// Туман снимает не готовность мира к управлению, а его полная сборка: пока он
+// сплошной, за меню не видно ни стройки, ни компиляции. Условий два, и оба
+// обязательны: собрано дерево коллизий (без него в мир нельзя вовсе) и
+// прогрета сцена (иначе первый же поворот головы даст фриз уже в открытом
+// мире). К нему же привязано начало появления: пелена мира отходит ровно
+// тогда, когда расходится туман меню, а не в пустоту за сплошной подложкой.
+let warmDone = false
+let worldUnveiled = false
+
+function unveilWorld(): void {
+  if (worldUnveiled) return
+  worldUnveiled = true
+  awakening.reveal() // мир начинает проступать из темноты
+  ;(window as Window & { __FTE_BOOT__?: { unveil(): void } }).__FTE_BOOT__?.unveil()
+}
+
+function tryUnveil(): void {
+  if (treeReady && warmDone) unveilWorld()
+}
+
+// Предохранитель: дерево или прогрев могут не упасть, а просто не дойти до
+// конца. Оставить человека за туманом навсегда нельзя ни в каком случае.
+setTimeout(unveilWorld, 15000)
 
 // Карты заливаются в видеопамять по мере прихода, вне отрисовки.
 uploadMapsWith((tex) => renderer.initTexture(tex))
@@ -486,8 +573,12 @@ function frame(frameAt: number) {
   // рисовать его значит греть видеокарту в пустоту и отбирать кадры у меню.
   // Прогревочный кадр (`warmUp`) идёт мимо этой проверки: он рисует сам, не
   // через цикл, и нужен для компиляции шейдеров.
-  const unveiled = document.body.classList.contains('unveiled')
-  if (!unveiled && !awakening.holds()) return
+  // Раньше здесь стояло `!unveiled && !awakening.holds()`, и это не работало:
+  // `holds()` истинно от начала появления до самого конца входа, то есть всё
+  // время под туманом. Мир честно рисовался в никуда и отбирал кадры у меню.
+  // Теперь условие одно: нет тумана - есть кадры. Вход туман снимает сам
+  // (`unveilWorld`), так что войти в нерисуемый мир нельзя.
+  if (!document.body.classList.contains('unveiled')) return
   if (
     document.body.classList.contains('paused') &&
     !awakening.holds() &&
