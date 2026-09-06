@@ -14,7 +14,8 @@ import * as THREE from 'three'
 import { HeldTool, type Stroke } from 'world-core/core'
 import { Burst } from './burst'
 import { pz } from './stroke'
-import { gltf } from '../gltfload'
+import { shovel as proceduralShovel } from 'world-core/props'
+import { pbr } from '../world/materials'
 
 // Покойный наклон. В Snowfall тут стояло 1.18, и при тамошнем мировом FOV 75°
 // лопата читалась; здесь кадр у́же, и от такого наклона штык распластывался
@@ -73,63 +74,13 @@ const STROKES: Record<ShovelStroke, Stroke> = {
  * base + ORM, 616 треугольников, один draw call. Конвенцию рига держит сама
  * модель — остриё штыка в НАЧАЛЕ КООРДИНАТ, черенок вверх по +Y, совок открыт
  * в -Z, высота те же 1.45 м, — поэтому кейфреймы, `PIVOT_Y` и `TIP` не тронуты.
- * Прежняя процедурная сборка осталась в истории файла.
+ * Геометрия и материалы снова процедурные, загружаемого GLB больше нет.
  */
-const MODEL = 'models/shovel.glb'
-
-let proto: THREE.Group | null = null
-const waiting: THREE.Group[] = [] // группы, собранные до того, как модель доехала
-let loading: Promise<THREE.Group> | null = null
-
-/** Грузит модель один раз. Прогресс идёт в общую полосу загрузки. */
-export function loadShovelModel(): Promise<THREE.Group> {
-  if (!loading) {
-    loading = gltf()
-      .loadAsync(MODEL)
-      .then((res) => {
-        proto = res.scene
-        proto.traverse((o) => {
-          const m = o as THREE.Mesh
-          if (!m.isMesh) return
-          const mat = m.material as THREE.MeshStandardMaterial
-          // Атлас у станции свой: обмёрзшая сталь `PALETTE.metalFrost`, дерево
-          // серо-холодное, пластик почти графит. Подкрасить общий тёплый атлас
-          // множителем не выходит — чтобы сталь стала обмёрзшей, дерево уходит
-          // в оранжевый, — поэтому мир печётся отдельно (стадия s6 в наборе
-          // сборки), а цвет материала остаётся белым.
-          // Металличность и шероховатость лежат в ORM-карте, множители её
-          // домножают: roughness=1 оставляет запечённое как есть.
-          mat.metalness = 1
-          mat.roughness = 1
-          mat.envMapIntensity = 1.2
-        })
-        while (waiting.length) waiting.pop()!.add(proto!.clone(true))
-        return proto
-      })
-  }
-  return loading
+const materials = {
+  wood: pbr('wood', { color: 0x958979, roughness: 0.86, meters: 1.0 }),
+  steel: pbr('metal', { color: 0x9caeb8, metalness: 0.82, roughness: 0.54, hasMetal: true, meters: 0.6 }),
 }
-
-/**
- * Модель не доехала: сеть оборвалась, кэш побился. Молчать нельзя - группа
- * инструмента осталась бы в мире пустой, и лопату можно было бы взять и махать
- * ею: звук, отдача, брызги, всё как надо, но в руках ничего.
- */
-export function onShovelModelFail(fn: (e: unknown) => void): void {
-  loadShovelModel().catch(fn)
-}
-
-/** Остриё штыка в НАЧАЛЕ КООРДИНАТ, черенок вверх по +Y — конвенция рига. */
-function buildShovel(): THREE.Group {
-  const g = new THREE.Group()
-  // риг ядра зовёт build() синхронно и дважды (копия в мире и копия в руках),
-  // поэтому группа отдаётся сразу, а модель доедет в неё сама
-  if (proto) g.add(proto.clone(true))
-  else waiting.push(g)
-  return g
-}
-
-loadShovelModel()
+function buildShovel(): THREE.Group { return proceduralShovel(materials) }
 
 export class Shovel extends HeldTool {
   private bursts: Burst
@@ -149,13 +100,7 @@ export class Shovel extends HeldTool {
       },
     })
     this.bursts = new Burst(scene) // снежная крошка из-под штыка
-    // Без модели лопаты в мире нет вовсе: уводим её туда, где до неё не
-    // дотянуться (радиус подбора - метры), и гасим пустую группу.
-    onShovelModelFail((e) => {
-      console.warn('модель лопаты не загрузилась, лопаты в мире не будет:', e)
-      this.world.visible = false
-      this.pos.set(0, -1000, 0)
-    })
+
   }
 
   spray(point: THREE.Vector3, dir: THREE.Vector3) {

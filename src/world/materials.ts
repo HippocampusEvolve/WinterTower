@@ -1,164 +1,105 @@
 /**
- * materials.ts — общие материалы мира.
- *
- * Цвета берутся только из PALETTE (atmosphere.ts). Здесь задаётся лишь то,
- * как поверхность отвечает на свет: шероховатость, металличность, свечение.
- *
- * Фаза 4 добавила карты (`public/textures/*`, ambientCG, CC0). Правила, ради
- * которых заведён `pbr()`:
- *
- * 1. **Карта цвета берётся не всегда, и решает это замер, а не глаз.** Шейдер
- *    УМНОЖАЕТ карту на `color`, поэтому тёмная карта утаскивает вниз всю гамму,
- *    сведённую по референсу. Средние карт в линейном пространстве (замер в
- *    браузере по canvas): бетон 0.48, снег 0.58, гравий 0.20, металл 0.058,
- *    камень 0.074. Правило: если среднее не ниже ~0.4, карта цвета идёт в дело
- *    с компенсацией `colorGain = 1/среднее` — тогда поверхность в среднем
- *    остаётся ровно того цвета, что в палитре, а карта работает грязью
- *    и пятнами. Если ниже — от карты берутся ТОЛЬКО нормаль и шероховатость,
- *    цвет остаётся плоским из `PALETTE`. Компенсировать множителем 13–17
- *    бессмысленно: у такой карты почти весь диапазон в нуле, и вместо камня
- *    выходит чёрное поле с редкими белыми искрами.
- *    Карты цвета, не прошедшие порог (камень, гравий, а с фазы 13 — дерево,
- *    ржавчина, ткань, лёд, металл), поэтому вынесены из `public/` в
- *    `textures-unused/`: vite копирует `public` в `dist` целиком, и мегабайты
- *    уезжали в прод-сборку, ни разу не будучи запрошенными браузером.
- * 2. **Зерно задаётся в МЕТРАХ и одинаково у всей поверхности мира.** Раньше
- *    здесь стояло `tiles` — повторов на грань, — и это было ошибкой: UV
- *    примитивов идут 0…1 НА ГРАНЬ независимо от её размера, поэтому одно и то
- *    же число давало зерно 4 м на стене корпуса и 5 см на кабельном лотке.
- *    Узкие детали читались полосами другого материала при том же материале —
- *    несогласованная плотность текселей. Развёртку теперь считает `planarUV`
- *    в `parts.ts` (единица UV = метр мира), а материалу остаётся один множитель
- *    `meters`: сколько метров укладывается в один повтор картинки.
- * 3. **Карты грузятся лениво и асинхронно.** Мир строится синхронно на старте,
- *    и ждать сеть нельзя: пока карт нет, материал уже работает на цвете из
- *    палитры, а `needsUpdate` докладывает карту по готовности.
- * 4. **Карты лежат WebP q90, а не исходным JPEG, и РАЗМЕР НАПИСАН В ИМЕНИ.**
- *    ambientCG отдаёт JPEG качества ~100: три normal-карты весили почти по
- *    10 МБ, вся папка — 64 МБ. Перекодировка в WebP ужала её до 13 МБ, а
- *    пересчёт разрешения — до 3.9 МБ, и это второе оказалось важнее первого:
- *    вход в мир на канале 8 Мбит/с сократился с 13 до 8 секунд, а заставка
- *    загрузки перестала уходить по аварийному таймеру, не дождавшись карт.
- *
- *    Потолки: normal и color обычно 1024, rough и metal 512. Для дерева,
- *    ткани и ржавчины normal тоже 512: на их физическом масштабе и сквозь
- *    туман разницы в кадре нет, а загрузка короче больше чем на мегабайт.
- *    зерно задано в метрах, и карта 2048 при `meters` 2.4 давала 853 текселя
- *    на метр — на порядок больше, чем способен показать экран сквозь туман
- *    на сорока метрах. Кадр до и после неотличим, а `snow/rough` при этом
- *    ужалась с 1169 КБ до 14: карта почти ровная, и всё её содержимое было
- *    шумом разрешения.
- *
- *    Суффикс в имени (`normal_512`, `rough_512`) — не украшение. Nginx отдаёт
- *    текстуры с годовым `immutable`, поэтому под прежним именем вернувшийся
- *    игрок год видел бы старую версию. Меняешь содержимое — меняй имя.
- *    Исходники лежат в `textures-unused/orig/` — новую карту прогонять тем же
- *    путём, как есть не класть.
+ * Общие материалы: периодические карты из world-core, без файлов текстур.
+ * Цвет мира задаёт PALETTE. Нейтральная карта нормализуется по среднему
+ * в линейном пространстве, поэтому генерация не меняет яркость палитры.
+ * Worker считает массивы; главный поток обновляет общие источники текстур.
  */
-
 import * as THREE from 'three'
+import { bake, recipe, toTextures, SURFACE_MEAN_LINEAR, type Baked } from 'world-core/materials'
 import { PALETTE } from '../atmosphere'
 
 const std = (o: THREE.MeshStandardMaterialParameters) => new THREE.MeshStandardMaterial(o)
-
-const loader = new THREE.TextureLoader()
-
-/**
- * Файлы, уже отданные в загрузку, и клоны, ждущие свою картинку.
- *
- * Одна карта нужна нескольким материалам сразу: камень идёт и в рельеф, и в
- * валуны, и в осыпь; металл — в лестницу, настил и короба. А `loader.load`
- * на КАЖДЫЙ вызов заводит свой `<img>` и свою текстуру в видеопамяти, даже
- * если путь тот же самый. Замер до этого кэша: 40 картинок на 25 файлов и
- * 46 текстур в GPU вместо 25.
- *
- * Дублировалась не только память. Браузер, получив четыре десятка запросов
- * на два с половиной десятка адресов, доводил до конца лишь первые три-четыре,
- * а остальные держал открытыми, ожидая ответа по тому же адресу. Для
- * `LoadingManager` это значило, что счётчик застревал на 4 из 41 и `onLoad`
- * не приходил никогда — заставка загрузки уходила по предохранителю, а полоса
- * замирала на десятой доле.
- */
-const files = new Map<string, THREE.Texture>()
-const pending = new Map<string, THREE.Texture[]>()
-
-/**
- * Заливка пришедшей карты в видеопамять — сразу, а не первым кадром, который
- * её увидит.
- *
- * Заставка теперь уходит по первому кадру, а не по последней карте (main.ts):
- * мир открывается плоскими цветами палитры и одевается уже на глазах. Загрузка
- * от этого короче, но заливка каждой карты в GPU переехала из одного общего
- * прогрева в случайный кадр посреди игры — а это и есть тот подтормоз, ради
- * устранения которого прогрев вообще заведён.
- *
- * Поэтому карту заливаем в тот же миг, когда её принёс декодер: `initTexture`
- * делает загрузку в GPU здесь, вне отрисовки. Клоны делят с оригиналом
- * `source`, а рендерер кэширует заливку по нему — значит одна заливка на файл
- * закрывает все материалы, которые эту карту взяли.
- *
- * Рендерер модулю материалов взять неоткуда, поэтому его подкладывает `main.ts`
- * вызовом `uploadMapsWith`. Карты, успевшие приехать раньше подписки, ждут в
- * `arrived` — на быстром канале и горячем кэше это обычное дело.
- */
+type Channel = 'map' | 'normalMap' | 'roughnessMap' | 'metalnessMap'
+type Maps = { textures: Map<Channel, THREE.Texture>, users: THREE.Texture[], gain: number, size: number }
+const sets = new Map<string, Maps>()
 let upload: ((tex: THREE.Texture) => void) | null = null
 const arrived: THREE.Texture[] = []
-
-function ready(tex: THREE.Texture): void {
-  if (upload) upload(tex)
-  else arrived.push(tex)
-}
-
-/** Кто заливает карты в видеопамять. Зовётся из `main.ts` с рендерером. */
 export function uploadMapsWith(fn: (tex: THREE.Texture) => void): void {
   upload = fn
   for (const t of arrived.splice(0)) fn(t)
 }
-
-/**
- * Один канал карты. `srgb` — только для цвета; нормали и шероховатость линейные.
- *
- * Проверка на DOM — не паранойя: `npm run measure` собирает НАСТОЯЩИЕ модули
- * мира и гоняет их на Node, а `TextureLoader` внутри дёргает
- * `document.createElementNS`. Без этой ветки замерялка падает от того, что
- * рельеф импортирует материалы. Пустая текстура ей подходит: она мерит
- * геометрию, а не картинку.
- */
-function map(path: string, meters: number, srgb: boolean): THREE.Texture {
+let workers: Worker[] | null = null
+let order = 0
+const pending = new Map<string, ReturnType<typeof setTimeout>>()
+let fallbackQueue = Promise.resolve()
+function install(name: string, baked: Baked) {
+  if (!pending.has(name)) return
+  clearTimeout(pending.get(name))
+  pending.delete(name)
+  const entry = sets.get(name)!
+  const generated = toTextures(baked, name)
+  for (const [channel, tex] of entry.textures) {
+    const bakedTex = generated[channel]
+    if (!bakedTex) continue
+    tex.image = bakedTex.image
+    tex.needsUpdate = true
+    if (upload) upload(tex); else arrived.push(tex)
+  }
+  for (const tex of entry.users) tex.needsUpdate = true
+}
+function fallback(name: string) {
+  fallbackQueue = fallbackQueue.then(() => new Promise<void>(resolve => setTimeout(() => {
+    if (pending.has(name)) {
+      const source = recipe(name)
+      install(name, bake(source.gen, source.size, source.normalStrength))
+    }
+    resolve()
+  }, 0)))
+}
+function request(name: string) {
+  pending.set(name, setTimeout(() => fallback(name), 15000))
+  if (!workers) {
+    workers = []
+    try { for (let i = 0; i < 2; i++) {
+      const w = new Worker(new URL('./materials.worker.ts', import.meta.url), { type: 'module' })
+      w.onmessage = ({ data }: MessageEvent<{ name: string; baked: Baked; error?: string }>) => {
+        if (data.error) { fallback(data.name); return }
+        install(data.name, data.baked)
+      }
+      w.onerror = event => {
+        event.preventDefault()
+        for (const worker of workers!) worker.terminate()
+        workers = []
+        for (const key of pending.keys()) fallback(key)
+      }
+      workers.push(w)
+    } } catch {
+      for (const worker of workers) worker.terminate()
+      workers = []
+    }
+  }
+  if (workers.length) workers[order++ % workers.length].postMessage(name)
+  else fallback(name)
+}
+function surface(name: string): Maps {
+  const key = `surfaceTower${name[0].toUpperCase()}${name.slice(1)}`
+  let entry = sets.get(key)
+  if (!entry) {
+    entry = { textures: new Map(), users: [], gain: 1 / SURFACE_MEAN_LINEAR[key], size: recipe(key).size }
+    sets.set(key, entry)
+    if (typeof document !== 'undefined') request(key)
+  }
+  return entry
+}
+function map(entry: Maps, channel: Channel, meters: number): THREE.Texture {
   if (typeof document === 'undefined') return new THREE.Texture()
-
-  let base = files.get(path)
+  let base = entry.textures.get(channel)
   if (!base) {
-    const waiting: THREE.Texture[] = []
-    pending.set(path, waiting)
-    base = loader.load(path, (tex) => {
-      // Картинка пришла — клоны об этом сами не узнают: `TextureLoader` метит
-      // только ту текстуру, которую вернул из `load`.
-      for (const t of waiting) t.needsUpdate = true
-      pending.delete(path)
-      ready(tex)
-    })
+    // WebGL storage cannot change dimensions after the first upload.
+    const c = document.createElement('canvas'); c.width = c.height = entry.size
+    const ctx = c.getContext('2d')!
+    const neutral = new THREE.Color().setScalar(1 / entry.gain).getStyle()
+    ctx.fillStyle = channel === 'normalMap' ? 'rgb(128,128,255)' : channel === 'map' ? neutral : 'rgb(255,255,255)'
+    ctx.fillRect(0, 0, c.width, c.height)
+    base = new THREE.CanvasTexture(c)
     base.wrapS = base.wrapT = THREE.RepeatWrapping
-    if (srgb) base.colorSpace = THREE.SRGBColorSpace
+    base.colorSpace = channel === 'map' ? THREE.SRGBColorSpace : THREE.NoColorSpace
     base.anisotropy = 8
-    files.set(path, base)
+    entry.textures.set(channel, base)
   }
-
-  // Зерно у каждого материала своё, а картинка одна на всех. Клон делит с
-  // оригиналом `source`, поэтому в видеопамять карта уезжает единожды, а
-  // repeat, offset и прочее у клона собственные.
   const t = base.clone()
-  // UV приходят в метрах, поэтому повтор — обратная величина размера зерна.
   t.repeat.set(1 / meters, 1 / meters)
-
-  const waiting = pending.get(path)
-  if (waiting) {
-    // `clone()` метит текстуру к заливке, а картинки ещё нет: рендерер будет
-    // жаловаться на неполный `<img>` каждый кадр до её прихода. Сбрасываем
-    // версию и поднимем её сами, когда файл догрузится.
-    t.version = 0
-    waiting.push(t)
-  }
+  entry.users.push(t)
   return t
 }
 
@@ -232,35 +173,21 @@ function blotTexture(): THREE.Texture {
   return t
 }
 
-/**
- * Материал с картами из `public/textures/<name>/`.
- * `meters` — физический размер одного повтора картинки в метрах мира. Величина
- * абсолютная: зерно бетона 4 м лежит четырёхметровым и на двадцатиметровой
- * стене, и на двадцатисантиметровом лотке. Держится это на том, что развёртку
- * всей статики считает `planarUV` (`parts.ts`) в метрах.
- */
-function pbr(
+/** Generated maps repeat in world meters; all instances share their source. */
+export function pbr(
   name: string,
-  o: THREE.MeshStandardMaterialParameters & { meters?: number; hasMetal?: boolean; colorGain?: number },
+  o: THREE.MeshStandardMaterialParameters & { meters?: number; hasMetal?: boolean },
 ): THREE.MeshStandardMaterial {
-  const { meters = 3, hasMetal = false, colorGain, ...rest } = o
+  const { meters = 3, hasMetal = false, ...rest } = o
   const m = std(rest)
-  const base = `textures/${name}/`
-  const normalSize = name === 'wood' || name === 'cloth' || name === 'rust' ? '512' : '1k'
-  if (colorGain) {
-    m.map = map(base + 'color_1k.webp', meters, true)
-    // Компенсация среднего: карта в среднем даёт `1/colorGain`, множитель
-    // возвращает поверхность к цвету палитры. Значение выше 1 в three законно —
-    // цвет материала не обязан лежать в 0…1.
-    m.color.multiplyScalar(colorGain)
-  }
-  // Размер в имени: см. правило 4 в шапке файла. Под прежним именем карта
-  // не доехала бы до вернувшегося игрока — nginx отдаёт их с годовым immutable.
-  m.normalMap = map(base + `normal_${normalSize}.webp`, meters, false)
-  m.roughnessMap = map(base + 'rough_512.webp', meters, false)
-  if (hasMetal) m.metalnessMap = map(base + 'metal_512.webp', meters, false)
-  // Нормаль скачанного бетона рассчитана на плоскую стену в упор. В тумане
-  // на 40 метрах она превращается в шум, поэтому давим её вдвое.
+  const entry = surface(name)
+  // These were the only diffuse maps used before the procedural migration.
+  // Other materials keep their palette, with detail in normal/roughness.
+  if (name === 'snow' || name === 'concrete' || name === 'paper') m.map = map(entry, 'map', meters)
+  m.normalMap = map(entry, 'normalMap', meters)
+  m.roughnessMap = map(entry, 'roughnessMap', meters)
+  if (hasMetal) m.metalnessMap = map(entry, 'metalnessMap', meters)
+  m.color.multiplyScalar(entry.gain)
   m.normalScale = new THREE.Vector2(0.55, 0.55)
   return m
 }
@@ -549,7 +476,7 @@ export const MAT = {
   ground: pbr('rock', { vertexColors: true, roughness: 0.94, metalness: 0, meters: 2.4 }),
 
   /** Снег на крышах и наносах. */
-  snow: pbr('snow', { color: PALETTE.snowLit, roughness: 0.95, metalness: 0, meters: 2.5, colorGain: 1.72 }),
+  snow: pbr('snow', { color: PALETTE.snowLit, roughness: 0.95, metalness: 0, meters: 2.5 }),
 
   /**
    * Отдельные валуны на склоне. `flatShading` — не стилизация: сглаженные
@@ -590,8 +517,7 @@ export const MAT = {
     metalness: 0.05,
     envMapIntensity: 1.8,
     // Зерно крупное: озеро — одна плоскость в полсотни метров, и мелкий повтор
-    // на ней читается тканью. Карта цвета не берётся (среднее 0.283 при пороге
-    // 0.4) — от неё нужна только сетка трещин в нормали.
+    // на ней читается тканью. Цвет задаёт палитра, рельеф — генератор ядра.
     meters: 6,
   }),
 
@@ -614,15 +540,14 @@ export const MAT = {
    *
    * Самый «заброшенный» материал станции, и работает он именно шероховатостью:
    * ржавое железо в синий час отличается от крашеного не цветом, а тем, что
-   * не даёт ни одного ровного блика. Карта — `Rust004` (CC0), цвет свой
-   * (среднее карты 0.029 — глубже некуда).
+   * не даёт ни одного ровного блика. Ржавчина — диэлектрик, её рельеф
+   * и шероховатость печёт ядро, цвет остаётся у мира.
    */
   rust: snowify(pbr('rust', {
     color: 0x8f8177,
     roughness: 0.95,
-    metalness: 0.25,
+    metalness: 0,
     meters: 1,
-    hasMetal: true,
   }), 0.7),
 
   /** Дерево лодки: то же, что у всего деревянного, но выбеленное сильнее —
@@ -630,10 +555,10 @@ export const MAT = {
   boat: snowify(pbr('wood', { color: 0x7d848a, roughness: 0.9, metalness: 0, meters: 1.4 }), 0.8),
 
   /** Выцветший панельный бетон стен. Секция корпуса ~20 м: пять повторов — 4 м зерна. */
-  concrete: snowify(pbr('concrete', { color: PALETTE.concrete, roughness: 0.9, metalness: 0, meters: 4, colorGain: 2.08 })),
+  concrete: snowify(pbr('concrete', { color: PALETTE.concrete, roughness: 0.9, metalness: 0, meters: 4 })),
 
   /** Цоколи, подпорные стенки: тот же бетон, но в тени и грязнее. */
-  concreteDark: snowify(pbr('concrete', { color: 0x8d9ba2, roughness: 0.93, metalness: 0, meters: 3, colorGain: 2.08 })),
+  concreteDark: snowify(pbr('concrete', { color: 0x8d9ba2, roughness: 0.93, metalness: 0, meters: 3 })),
 
   /**
    * Мокрый бетон дорожки. Блик от фонарей нужен, но 0.32 по шероховатости —
@@ -790,9 +715,7 @@ export const MAT = {
     metalness: 0,
     // Лист А4 — 30 см: зерно должно укладываться в него хотя бы раз.
     meters: 0.35,
-    // Единственная светлая карта набора: среднее 0.739, порог пройден,
-    // компенсация 1/0.739. Волокно и заломы видно на карте дежурств вблизи.
-    colorGain: 1.35,
+    // Среднюю яркость процедурной бумаги компенсирует общий pbr().
   }),
 
   /**

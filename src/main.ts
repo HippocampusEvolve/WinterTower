@@ -365,33 +365,22 @@ function enterWorld(ev: Event): void {
     touch.activate()
     shell.close()
   } else {
-    // Захват курсора могут и не дать, и это не сбой: браузер отдаёт его только
-    // по свежему жесту, а нажатие, пришедшее раньше готовности мира, до него
-    // доживает не всегда. Отменять из-за этого вход нельзя, иначе вернётся
-    // ровно то, на что жаловались: нажал, а ничего не случилось. Поэтому вход
-    // идёт всё равно, а курсор перехватывается первым же движением мыши.
-    const lock = renderer.domElement.requestPointerLock() as unknown
-    if (lock instanceof Promise) lock.catch(() => softEnter())
+    requestMouse()
   }
 }
 
-// Вход без захвата курсора: мир открыт и просыпается, а курсор возьмём на
-// первом же нажатии внутри мира.
-let awaitingLock = false
-
-function softEnter(): void {
-  if (!shell.isOpen()) return
-  awaitingLock = true
-  shell.close()
+// При отказе меню остаётся доступным, и каждое следующее нажатие может
+// повторить запрос. Обрабатываем и Promise, и старый событийный API.
+function mouseDenied(): void {
+  if (!document.pointerLockElement && !touch?.active) shell.open()
 }
-
-document.addEventListener('pointerlockerror', softEnter)
-
-addEventListener('pointerdown', () => {
-  if (!awaitingLock || document.pointerLockElement || shell.isOpen()) return
-  awaitingLock = false
-  renderer.domElement.requestPointerLock()
-})
+function requestMouse(): void {
+  try {
+    const pending = renderer.domElement.requestPointerLock() as Promise<void> | undefined
+    pending?.catch(mouseDenied)
+  } catch { mouseDenied() }
+}
+document.addEventListener('pointerlockerror', mouseDenied)
 
 const shell = createShell({ onEnter: enterWorld })
 
@@ -557,7 +546,8 @@ addEventListener('resize', () => {
 // В three r185 Timer живёт в ядре, а не в examples/jsm. Clock объявлен устаревшим.
 const timer = new THREE.Timer()
 let loopStarted = false
-let lastFrameAt = 0
+const PAUSE_FRAME_MS = 1000 / 30
+let nextPauseFrameAt = 0
 
 // Отрисовка мира одной ссылкой: замыкание внутри кадра создавало бы новую
 // функцию шестьдесят раз в секунду впустую.
@@ -574,10 +564,9 @@ function startLoop() {
 }
 
 function frame(frameAt: number) {
-  // На паузе мир рисуется вдесятеро реже: за экраном входа он всё равно почти
-  // не меняется, а батарею беречь стоит. Исключение — пробуждение: пелена
-  // отходит и взгляд поднимается ИМЕННО на этом экране, и десять кадров в
-  // секунду превратили бы плавное появление в дёрганое.
+  // Фон паузы живёт в 30 кадрах/с: плавный снег при меньшем числе рендеров.
+  // Пробуждение и игра идут с частотой экрана. Интервал паузы меньше
+  // потолка dt (0.05 с), поэтому атмосфера не замедляется вдвое, как при 10 FPS.
   //
   // И отдельно: пока туман экрана входа сплошной, мира за ним не видно вовсе -
   // рисовать его значит греть видеокарту в пустоту и отбирать кадры у меню.
@@ -588,14 +577,20 @@ function frame(frameAt: number) {
   // время под туманом. Мир честно рисовался в никуда и отбирал кадры у меню.
   // Теперь условие одно: нет тумана - есть кадры. Вход туман снимает сам
   // (`unveilWorld`), так что войти в нерисуемый мир нельзя.
-  if (!document.body.classList.contains('unveiled')) return
-  if (
-    document.body.classList.contains('paused') &&
-    !awakening.holds() &&
-    frameAt - lastFrameAt < 100
-  )
+  if (document.hidden || !document.body.classList.contains('unveiled')) {
+    nextPauseFrameAt = 0
     return
-  lastFrameAt = frameAt
+  }
+  if (document.body.classList.contains('paused') && !awakening.holds()) {
+    // Держим сетку времени, а не отсчитываем интервал от опоздавшего кадра.
+    // Допуск 0.5 мс учитывает округление rAF; после фриза не догоняем кадры.
+    if (frameAt + 0.5 < nextPauseFrameAt) return
+    nextPauseFrameAt = frameAt - nextPauseFrameAt >= PAUSE_FRAME_MS
+      ? frameAt + PAUSE_FRAME_MS
+      : nextPauseFrameAt + PAUSE_FRAME_MS
+  } else {
+    nextPauseFrameAt = 0
+  }
   timer.update()
 
   // потолок на dt: после свёрнутой вкладки не должно телепортировать сквозь стены
