@@ -36,6 +36,7 @@ const REDUCED =
 const STEPPED = REDUCED || typeof requestAnimationFrame !== 'function';
 
 let ready = false; // мир собран и подхватил управление экраном
+let failed = false;
 let unveiled = false; // туман разошёлся и открыл мир за меню
 let onEnter = null; // сюда мир кладёт свой обработчик, когда готов
 let onReset = null;
@@ -47,8 +48,11 @@ document.body.classList.add('booting');
 // ними мир как раз и доодевается.
 
 function fail(reason) {
-  if (ready) return;
-  ready = true;
+  if (failed || unveiled) return;
+  failed = true;
+  onEnter = null;
+  onReset = null;
+  clearTimeout(watchdog);
   console.error('мир не собрался:', reason);
   document.body.classList.add('boot-failed');
   if (msg) {
@@ -165,6 +169,7 @@ function drift(t) {
 }
 
 function tick(stamp) {
+  if (failed) { ticking = false; return; }
   const dt = Math.min(0.05, Math.max(0, (stamp - last) / 1000));
   last = stamp;
   const cap = finishing ? 1 : HOLD_CAP;
@@ -233,7 +238,7 @@ function setNote(text) {
  * расступается подложка меню.
  */
 function unveil() {
-  if (unveiled) return;
+  if (failed || unveiled) return;
   unveiled = true;
   finishing = true;
   goal = 1;
@@ -241,6 +246,7 @@ function unveil() {
   document.body.classList.remove('booting');
   document.body.classList.add('unveiled');
   document.body.classList.add('ready');
+  document.getElementById('boot')?.setAttribute('aria-hidden', 'true');
   setTimeout(() => fog?.classList.add('gone'), UNVEIL_MS);
 }
 
@@ -256,6 +262,7 @@ window.__FTE_BOOT__ = {
    * @param {() => void}          [handlers.reset] забыть мир и начать заново
    */
   ready(handlers = {}) {
+    if (failed) return;
     ready = true;
     clearTimeout(watchdog);
     // Веха, а не конец: мир подхватил экран, но отделка ещё едет. Туман

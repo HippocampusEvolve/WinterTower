@@ -25,6 +25,7 @@ import {
   guyAnchors,
 } from './layout'
 import { stairProfile } from './stairProfile'
+import { scatterClear } from './scatterClearance'
 import type { Warm } from './glow'
 
 /** Полилиния, пересемплированная с постоянным шагом: лента должна лечь по рельефу. */
@@ -739,7 +740,16 @@ export function buildProps(): {
       // Крутится камень в основном вокруг вертикали, заваливаясь лишь слегка:
       // сплющенный по высоте булыжник, кувыркнутый на произвольный угол,
       // встаёт торчком и перестаёт быть камнем.
-      target.add(geo, x, y, z, (rand() - 0.5) * 0.6, rand() * 6.3, (rand() - 0.5) * 0.6)
+      const rx = (rand() - 0.5) * 0.6, ry = rand() * 6.3, rz = (rand() - 0.5) * 0.6
+      geo.computeBoundingSphere()
+      // A boulder can overhang a route even when its centre is off the path.
+      // Consume the original random sequence before rejecting it: surviving
+      // rocks and subsequent props retain their saved, deterministic layout.
+      if (!scatterClear(x, z, geo.boundingSphere!.radius + 0.25)) {
+        geo.dispose()
+        continue
+      }
+      target.add(geo, x, y, z, rx, ry, rz)
       // Нашлёпки на макушках больше нет: снег на камне — тот же шейдерный
       // слой, что на бетоне (`snowify`), и он ложится по настоящей форме
       // валуна, а не отдельным сплющенным икосаэдром поверх него.

@@ -58,7 +58,8 @@ self.addEventListener('install', (e) => {
       // Ждать закрытия старых вкладок незачем: оболочка версионирована именем
       // кэша, и новый worker не может подсунуть старой вкладке чужие файлы.
       .then(() => self.skipWaiting())
-      .catch(() => self.skipWaiting()) // сеть подвела на установке — не беда
+      // A partial shell must never replace the last complete offline release.
+      .catch(async (error) => { await caches.delete(SHELL_CACHE); throw error; })
   );
 });
 
@@ -120,7 +121,7 @@ self.addEventListener('fetch', (e) => {
           caches.match(SCOPE, { cacheName: SHELL_CACHE, ignoreVary: true });
         const live = fetch(req)
           .then(async (r) => {
-            if (storable(r)) (await caches.open(SHELL_CACHE)).put(SCOPE, r.clone());
+            if (storable(r)) e.waitUntil((await caches.open(SHELL_CACHE)).put(SCOPE, r.clone()).catch(() => {}));
             return r;
           })
           .catch(() => null);
@@ -146,7 +147,7 @@ self.addEventListener('fetch', (e) => {
       const hit = await assets.match(req);
       if (hit) return hit;
       const r = await fetch(req);
-      if (storable(r)) assets.put(req, r.clone());
+      if (storable(r)) e.waitUntil(assets.put(req, r.clone()).catch(() => {}));
       return r;
     })()
   );

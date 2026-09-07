@@ -19,8 +19,15 @@ export function keepOffline() {
   if (!('serviceWorker' in navigator)) return;
 
   if (new URLSearchParams(location.search).has('nosw')) {
-    navigator.serviceWorker.getRegistrations().then((rs: readonly ServiceWorkerRegistration[]) => rs.forEach((r) => r.unregister()));
-    if (self.caches) caches.keys().then((ks: string[]) => ks.forEach((k) => caches.delete(k)));
+    const base = import.meta.env.BASE_URL;
+    const scope = new URL(base, location.href).href;
+    const suffix = base.replace(/\//g, '-');
+    navigator.serviceWorker.getRegistrations()
+      .then(rs => Promise.all(rs.filter(r => r.scope === scope).map(r => r.unregister())))
+      .catch(e => console.warn('worker не отключён:', e));
+    if (self.caches) caches.keys()
+      .then(ks => Promise.all(ks.filter(k => k.startsWith(`fte-shell${suffix}`) || k === `fte-assets${suffix}`).map(k => caches.delete(k))))
+      .catch(e => console.warn('кэш мира не очищен:', e));
     return;
   }
 

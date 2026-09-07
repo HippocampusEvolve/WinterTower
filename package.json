@@ -5,6 +5,7 @@
   "description": "Ходибельный 3D-мир от первого лица: высокогорная станция в тумане.",
   "type": "module",
   "scripts": {
+    "test": "rolldown tools/scatter.test.ts -f esm -d node_modules/.wt --platform node && node node_modules/.wt/scatter.test.js",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
@@ -15,7 +16,7 @@
   "dependencies": {
     "postprocessing": "^6.39.3",
     "three": "^0.185.1",
-    "world-core": "github:HippocampusEvolve/world-core"
+    "world-core": "github:HippocampusEvolve/world-core#bd6bda7fffcb4b166cb223891a6c7816f47fd659"
   },
   "devDependencies": {
     "@types/three": "^0.185.1",

@@ -232,6 +232,11 @@ const haze = createHaze(camera, wind)
 scene.add(haze.group)
 
 const ambient = createAmbient(wind)
+let ecology: Awaited<ReturnType<typeof import('./ecology').createEcology>> | null = null
+const ecologyReady = import('./ecology').then(async ({createEcology}) => {
+  ecology = await createEcology(scene, ambient, qualityName)
+  mark('растения на месте')
+}).catch(error => console.warn('Жизнь склона:', error))
 // Снег, клубы и ореолы читают те же настройки атмосферы — один прогон на всех.
 atmosphere.onApply(() => {
   snow.apply()
@@ -325,6 +330,7 @@ Object.assign(window, {
     snow,
     haze,
     ambient,
+    get ecology() { return ecology },
     THREE,
   },
 })
@@ -496,7 +502,7 @@ function warmUp() {
     shell.ready()
     startLoop()
     keepOffline() // следующий приход в мир — без сети (offline.ts)
-    void warmSpread().then(() => {
+    void ecologyReady.then(() => warmSpread()).then(() => {
       warmDone = true
       tryUnveil()
     })
@@ -620,6 +626,8 @@ function frame(frameAt: number) {
   haze.update(dt)
   // За стеной ветер глуше: реестр помещений отвечает, под крышей ли игрок.
   ambient.update(dt, world.indoors(camera.position.x, camera.position.y, camera.position.z))
+  ecology?.update(dt, camera, input.locked,
+    world.indoors(camera.position.x, camera.position.y, camera.position.z), wind.gust, reducedMotion)
 
   // Мир рисуется внутри рук: они накладывают отдачу на камеру перед кадром
   // и снимают сразу после, а сами идут отдельным проходом поверх.

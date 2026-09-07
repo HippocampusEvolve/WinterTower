@@ -82,7 +82,7 @@ export function createAmbient(wind: Wind) {
     if (ctx) {
       // `interrupted` - состояние Safari после звонка или Siri: лечится тем же
       // resume, но под `=== 'suspended'` не попадало и оставляло мир немым.
-      if (ctx.state !== 'running') void ctx.resume()
+      if (ctx.state !== 'running' && ctx.state !== 'closed') void ctx.resume().catch(() => {})
       return
     }
     ctx = new AudioContext()
@@ -97,8 +97,8 @@ export function createAmbient(wind: Wind) {
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
         if (!ctx) return
-        if (document.hidden) void ctx.suspend()
-        else if (ctx.state !== 'running') void ctx.resume()
+        if (document.hidden) void ctx.suspend().catch(() => {})
+        else if (ctx.state !== 'running' && ctx.state !== 'closed') void ctx.resume().catch(() => {})
       })
     }
     const buf = noiseBuffer(ctx)
@@ -125,7 +125,7 @@ export function createAmbient(wind: Wind) {
     master.connect(dcBlock).connect(ctx.destination)
 
     sfx = ctx.createGain()
-    sfx.gain.value = 1
+    sfx.gain.value = muted ? 0 : wake
     sfx.connect(ctx.destination)
 
     // Пространство. Двух сверток хватает на весь мир: открытый склон и бетонная
@@ -209,6 +209,7 @@ export function createAmbient(wind: Wind) {
     lastGust = g
     lastInside = inside
     lastWake = wake
+    sfx.gain.setTargetAtTime(muted ? 0 : wake, t, 0.12)
 
     // setTargetAtTime, а не присваивание: ступеньки параметра дают щелчки.
     master.gain.setTargetAtTime(
@@ -232,7 +233,8 @@ export function createAmbient(wind: Wind) {
   /** Заглушить/вернуть звук. Горячей клавиши нет: из консоли — `wt.ambient.toggle()`. */
   function toggle() {
     muted = !muted
-    if (ctx) sfx.gain.setTargetAtTime(muted ? 0 : 1, ctx.currentTime, 0.05)
+    lastAt = -1
+    if (ctx) sfx.gain.setTargetAtTime(muted ? 0 : wake, ctx.currentTime, 0.05)
     return !muted
   }
 
